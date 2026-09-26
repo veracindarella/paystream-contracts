@@ -16,5 +16,34 @@ services:
       - cargo-cache:/usr/local/cargo/registry
     command: cargo test
 
+  # Local Soroban sandbox — persistent network for manual CLI testing.
+  #
+  # Usage:
+  #   docker compose up sandbox          # start the sandbox in the background
+  #   docker compose down sandbox        # stop and remove the container
+  #
+  # The sandbox exposes:
+  #   - RPC endpoint:  http://localhost:8000/soroban/rpc
+  #   - Horizon:       http://localhost:8000
+  #   - Friendbot:     http://localhost:8000/friendbot
+  #
+  # Point the Stellar CLI at the sandbox:
+  #   stellar network add local \
+  #     --rpc-url http://localhost:8000/soroban/rpc \
+  #     --network-passphrase "Standalone Network ; February 2017"
+  sandbox:
+    image: stellar/quickstart:latest
+    ports:
+      - "8000:8000"
+    environment:
+      - ENABLE_SOROBAN_RPC=true
+    command: --standalone --enable-soroban-rpc
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://localhost:8000/soroban/rpc"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+
 volumes:
   cargo-cache:

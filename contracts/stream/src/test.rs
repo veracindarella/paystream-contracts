@@ -1705,6 +1705,47 @@ fn test_settle_stream_before_stop_time_panics() {
     client.settle_stream(&id);
 }
 
+// ---------------------------------------------------------------------------
+// Issue #66 – TEST-17: resume_stream resets last_withdraw_time correctly
+// ---------------------------------------------------------------------------
+
+/// Pause at T=100, resume at T=200 — `last_withdraw_time` must equal 200 and
+/// `claimable` must be 0 immediately after resume (no time has elapsed since).
+#[test]
+fn test_resume_stream_resets_last_withdraw_time() {
+    let (env, client) = setup();
+    let admin = Address::generate(&env);
+    let employer = Address::generate(&env);
+    let employee = Address::generate(&env);
+    let token_id = setup_token(&env, &employer);
+
+    client.initialize(&admin);
+    let id = client.create_stream(&employer, &employee, &token_id, &10_000, &10, &0);
+
+    // Advance to T=100 and pause
+    env.ledger().with_mut(|l| l.timestamp = 100);
+    client.pause_stream(&employer, &id);
+
+    // Advance to T=200 and resume
+    env.ledger().with_mut(|l| l.timestamp = 200);
+    client.resume_stream(&employer, &id);
+
+    // Direct assertion: last_withdraw_time must equal the resume timestamp (200)
+    let stream = client.get_stream(&id);
+    assert_eq!(
+        stream.last_withdraw_time, 200,
+        "last_withdraw_time must be reset to the resume timestamp"
+    );
+    assert_eq!(stream.status, StreamStatus::Active);
+
+    // Claimable must be 0 immediately after resume (no time has passed since resume)
+    assert_eq!(
+        client.claimable(&id),
+        0,
+        "claimable must be 0 immediately after resume"
+    );
+}
+
 /// settle_stream must panic if there are still claimable tokens.
 #[test]
 #[should_panic(expected = "stream still has claimable tokens")]

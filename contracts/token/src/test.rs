@@ -95,3 +95,97 @@ fn test_transfer_overdraft() {
     client.initialize(&admin, &100);
     client.transfer(&admin, &user, &999);
 }
+
+// ---------------------------------------------------------------------------
+// Issue #69 – TEST-20: Property-based tests for token arithmetic
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod proptests {
+    use super::*;
+    use proptest::prelude::*;
+
+    /// Helper: spin up a fresh token contract with `initial_supply` minted to admin.
+    fn setup_with_supply(initial_supply: i128) -> (Env, TokenContractClient<'static>, Address) {
+        let env = Env::default();
+        env.mock_all_auths();
+        let id = env.register(TokenContract, ());
+        let client = TokenContractClient::new(&env, &id);
+        let admin = Address::generate(&env);
+        client.initialize(&admin, &initial_supply);
+        (env, client, admin)
+    }
+
+    proptest! {
+        #![proptest_config(ProptestConfig::with_cases(100_000))]
+
+        /// transfer: total supply is conserved and no balance goes negative.
+        #[test]
+        fn prop_transfer_conserves_supply(
+            supply in 1i128..=i128::MAX / 2,
+            amount in 0i128..=i128::MAX / 2,
+        ) {
+            let amount = amount.min(supply); // cap transfer at available balance
+            let (env, client, admin) = setup_with_supply(supply);
+            let recipient = Address::generate(&env);
+
+            let supply_before = client.total_supply();
+            client.transfer(&admin, &recipient, &amount);
+            let supply_after = client.total_supply();
+
+            prop_assert_eq!(supply_before, supply_after, "transfer must not change total supply");
+            prop_assert!(client.balance(&admin) >= 0, "sender balance must not go negative");
+            prop_assert!(client.balance(&recipient) >= 0, "recipient balance must not go negative");
+            prop_assert_eq!(
+                client.balance(&admin) + client.balance(&recipient),
+                supply,
+                "sum of balances must equal total supply"
+            );
+        }
+
+        /// mint: total supply increases by the exact amount minted.
+        #[test]
+        fn prop_mint_increases_supply_by_exact_amount(
+            supply in 0i128..=i128::MAX / 2,
+            mint_amount in 1i128..=i128::MAX / 2,
+        ) {
+            // Ensure supply + mint_amount doesn't overflow
+            prop_assume!(supply.checked_add(mint_amount).is_some());
+
+            let (env, client, admin) = setup_with_supply(supply);
+            let recipient = Address::generate(&env);
+
+            let supply_before = client.total_supply();
+            client.mint(&admin, &recipient, &mint_amount);
+            let supply_after = client.total_supply();
+
+            prop_assert_eq!(
+                supply_after - supply_before,
+                mint_amount,
+                "total supply must increase by exactly the minted amount"
+            );
+            prop_assert!(client.balance(&recipient) >= 0, "minted balance must not be negative");
+        }
+
+        /// burn: total supply decreases by the exact amount burned.
+        #[test]
+        fn prop_burn_decreases_supply_by_exact_amount(
+            supply in 1i128..=i128::MAX / 2,
+            burn_amount in 1i128..=i128::MAX / 2,
+        ) {
+            let burn_amount = burn_amount.min(supply); // cap burn at available balance
+            let (env, client, admin) = setup_with_supply(supply);
+
+            let supply_before = client.total_supply();
+            client.burn(&admin, &burn_amount);
+            let supply_after = client.total_supply();
+
+            prop_assert_eq!(
+                supply_before - supply_after,
+                burn_amount,
+                "total supply must decrease by exactly the burned amount"
+            );
+            prop_assert!(client.balance(&admin) >= 0, "balance after burn must not be negative");
+        }
+    }
+}

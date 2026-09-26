@@ -104,6 +104,35 @@ docker compose run --rm test
 docker compose run --rm build stellar contract build
 ```
 
+**Start a local Soroban sandbox** (persistent network for manual CLI testing):
+```bash
+docker compose up sandbox
+```
+
+The sandbox exposes:
+- RPC endpoint: `http://localhost:8000/soroban/rpc`
+- Horizon: `http://localhost:8000`
+- Friendbot: `http://localhost:8000/friendbot`
+
+Register it with the Stellar CLI:
+```bash
+stellar network add local \
+  --rpc-url http://localhost:8000/soroban/rpc \
+  --network-passphrase "Standalone Network ; February 2017"
+```
+
+Then deploy against it:
+```bash
+RPC_URL=http://localhost:8000/soroban/rpc \
+NETWORK_PASSPHRASE="Standalone Network ; February 2017" \
+./scripts/deploy-local.sh
+```
+
+Stop the sandbox:
+```bash
+docker compose down sandbox
+```
+
 The `cargo-cache` volume persists the Cargo registry between runs so subsequent builds are fast.
 
 ---
