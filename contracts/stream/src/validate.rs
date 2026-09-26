@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: Apache-2.0
 
 use crate::types::{
-    ERR_AMOUNT_NOT_POSITIVE, ERR_BELOW_MIN_DEPOSIT, ERR_INVALID_RATE, ERR_STOP_TIME_PAST,
-    ERR_ZERO_DEPOSIT, ERR_ZERO_RATE,
+    ERR_AMOUNT_NOT_POSITIVE, ERR_BELOW_MIN_DEPOSIT, ERR_INVALID_CLIFF, ERR_INVALID_RATE,
+    ERR_STOP_TIME_PAST, ERR_ZERO_DEPOSIT, ERR_ZERO_RATE,
 };
 use soroban_sdk::Address;
 
@@ -55,4 +55,16 @@ pub fn validate_top_up(amount: i128) {
 pub fn validate_rate(rate: i128) {
     assert!(rate > 0, "{}", ERR_ZERO_RATE);
     assert!(rate <= MAX_RATE_PER_SECOND, "{}", ERR_INVALID_RATE);
+}
+
+/// Validate a vesting `cliff_time` (0 = no cliff).
+///
+/// - E026 if `cliff_time` is in the past or after a non-zero `stop_time`
+pub fn validate_cliff(cliff_time: u64, stop_time: u64, now: u64) {
+    if cliff_time > 0 {
+        assert!(cliff_time >= now, "{}", ERR_INVALID_CLIFF);
+        if stop_time > 0 {
+            assert!(cliff_time <= stop_time, "{}", ERR_INVALID_CLIFF);
+        }
+    }
 }

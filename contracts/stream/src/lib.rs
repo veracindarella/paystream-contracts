@@ -19,15 +19,39 @@ pub const CONTRACT_VERSION: u32 = 1;
 use storage::{
     claimable_amount, clear_pending_admin, consume_admin_nonce, get_admin, get_admin_nonce,
     get_employee_streams, get_employer_streams, get_min_deposit, get_pending_admin,
-    get_pending_admin_nonce, index_employee_stream, index_employer_stream, load_stream, next_id,
-    save_stream, set_admin, set_min_deposit, set_pending_admin, set_pending_admin_nonce,
+    get_pending_admin_nonce, get_protocol_fee_bps, get_treasury, index_employee_stream,
+    index_employer_stream, load_stream, next_id, save_stream, set_admin, set_min_deposit,
+    set_pending_admin, set_pending_admin_nonce, set_protocol_fee_bps, set_treasury,
 };
 use types::{
-    DataKey, Stream, StreamParams, StreamStatus, ERR_BAD_PENDING_NONCE, ERR_NO_PENDING_ADMIN,
-    ERR_NOT_PENDING_ADMIN, ERR_REENTRANT, ERR_STREAM_CANCELLED, ERR_STREAM_EXHAUSTED,
-    ERR_ZERO_DEPOSIT,
+    DataKey, Stream, StreamParams, StreamStatus, ERR_BAD_PENDING_NONCE, ERR_FEE_TOO_HIGH,
+    ERR_MILESTONE_EXCEEDS, ERR_NOT_PENDING_ADMIN, ERR_NO_PENDING_ADMIN, ERR_REENTRANT,
+    ERR_STREAM_CANCELLED, ERR_STREAM_EXHAUSTED, ERR_ZERO_DEPOSIT,
 };
-use validate::{validate_create_stream, validate_rate, validate_top_up};
+use validate::{validate_cliff, validate_create_stream, validate_rate, validate_top_up};
+
+/// Maximum protocol fee: 100 bps (1%).
+pub const MAX_PROTOCOL_FEE_BPS: u32 = 100;
+
+/// Pull `deposit` from `employer`: the protocol fee goes to the treasury and the
+/// remainder into escrow. Returns the post-fee amount held by the contract.
+fn collect_deposit(
+    env: &Env,
+    token_client: &token::Client,
+    employer: &Address,
+    deposit: i128,
+) -> i128 {
+    let fee = deposit
+        .checked_mul(get_protocol_fee_bps(env) as i128)
+        .expect("fee overflow")
+        / 10_000;
+    if fee > 0 {
+        token_client.transfer(employer, &get_treasury(env), &fee);
+    }
+    let net = deposit - fee;
+    token_client.transfer(employer, &env.current_contract_address(), &net);
+    net
+}
 
 fn get_paused(env: &Env) -> bool {
     env.storage()
@@ -172,6 +196,33 @@ impl StreamContract {
         set_min_deposit(&env, amount);
     }
 
+    /// Admin sets the protocol fee (in basis points) charged on stream creation.
+    ///
+    /// # Errors
+    /// - Panics if `admin` auth fails or does not match stored admin
+    /// - E009 if `nonce` is wrong
+    /// - E025 if `fee_bps` > [`MAX_PROTOCOL_FEE_BPS`]
+    pub fn set_protocol_fee(env: Env, admin: Address, nonce: u64, fee_bps: u32) {
+        admin.require_auth();
+        assert_eq!(admin, get_admin(&env), "{}", ERR_NOT_ADMIN);
+        consume_admin_nonce(&env, nonce);
+        assert!(fee_bps <= MAX_PROTOCOL_FEE_BPS, "{}", ERR_FEE_TOO_HIGH);
+        set_protocol_fee_bps(&env, fee_bps);
+    }
+
+    /// Admin sets the treasury address receiving protocol fees (defaults to admin).
+    pub fn set_treasury(env: Env, admin: Address, nonce: u64, treasury: Address) {
+        admin.require_auth();
+        assert_eq!(admin, get_admin(&env), "{}", ERR_NOT_ADMIN);
+        consume_admin_nonce(&env, nonce);
+        set_treasury(&env, &treasury);
+    }
+
+    /// Current protocol fee in basis points.
+    pub fn protocol_fee(env: Env) -> u32 {
+        get_protocol_fee_bps(&env)
+    }
+
     /// Employer creates a salary stream and deposits funds into the contract escrow.
     ///
     /// Tokens are transferred from `employer` to the contract immediately.
@@ -184,6 +235,10 @@ impl StreamContract {
     /// - `deposit` — total tokens to lock in escrow (must be ≥ min deposit)
     /// - `rate_per_second` — tokens streamed per second (1 – 1,000,000,000)
     /// - `stop_time` — hard stop timestamp in seconds; 0 means indefinite
+    /// - `cliff_time` — vesting cliff; nothing is claimable before it (0 = no cliff)
+    ///
+    /// The protocol fee (if any) is deducted from `deposit` and sent to the
+    /// treasury; `stream.deposit` stores the post-fee amount.
     ///
     /// # Returns
     /// The new stream ID as `u64`.
@@ -195,6 +250,7 @@ impl StreamContract {
     /// - E001 if `rate_per_second` ≤ 0
     /// - E008 if `rate_per_second` > 1,000,000,000
     /// - Panics if `stop_time` is non-zero and in the past
+    /// - E026 if `cliff_time` is non-zero and not between now and `stop_time`
     /// - Panics if `employer` == `employee`
     /// - Panics if the token transfer fails
     pub fn create_stream(
@@ -205,6 +261,7 @@ impl StreamContract {
         deposit: i128,
         rate_per_second: i128,
         stop_time: u64,
+        cliff_time: u64,
     ) -> u64 {
         employer.require_auth();
         assert!(!get_paused(&env), "{}", ERR_CONTRACT_PAUSED);
@@ -220,10 +277,11 @@ impl StreamContract {
             &employer,
             &employee,
         );
+        validate_cliff(cliff_time, stop_time, now);
 
         let token_client = token::Client::new(&env, &token_address);
         token_client.balance(&employer); // SEP-41 probe
-        token_client.transfer(&employer, &env.current_contract_address(), &deposit);
+        let deposit = collect_deposit(&env, &token_client, &employer, deposit);
 
         let id = next_id(&env);
         let stream = Stream {
@@ -239,6 +297,8 @@ impl StreamContract {
             last_withdraw_time: now,
             status: StreamStatus::Active,
             locked: false,
+            cliff_time,
+            unlocked: 0,
         };
         save_stream(&env, &stream);
         index_employer_stream(&env, &employer, id);
@@ -290,7 +350,7 @@ impl StreamContract {
 
             let token_client = token::Client::new(&env, &p.token);
             token_client.balance(&employer); // SEP-41 probe
-            token_client.transfer(&employer, &env.current_contract_address(), &p.deposit);
+            let deposit = collect_deposit(&env, &token_client, &employer, p.deposit);
 
             let id = next_id(&env);
             let stream = Stream {
@@ -298,7 +358,7 @@ impl StreamContract {
                 employer: employer.clone(),
                 employee: p.employee.clone(),
                 token: p.token.clone(),
-                deposit: p.deposit,
+                deposit,
                 withdrawn: 0,
                 rate_per_second: p.rate_per_second,
                 start_time: now,
@@ -306,6 +366,8 @@ impl StreamContract {
                 last_withdraw_time: now,
                 status: StreamStatus::Active,
                 locked: false,
+                cliff_time: 0,
+                unlocked: 0,
             };
             save_stream(&env, &stream);
             index_employer_stream(&env, &employer, id);
@@ -375,6 +437,7 @@ impl StreamContract {
             .checked_add(amount)
             .expect("withdrawn overflow");
         stream.last_withdraw_time = now;
+        stream.unlocked = 0;
         if stream.withdrawn >= stream.deposit {
             stream.status = StreamStatus::Exhausted;
         }
@@ -445,6 +508,7 @@ impl StreamContract {
                 .checked_add(amount)
                 .expect("withdrawn overflow");
             stream.last_withdraw_time = now;
+            stream.unlocked = 0;
             if stream.withdrawn >= stream.deposit {
                 stream.status = StreamStatus::Exhausted;
             }
@@ -460,6 +524,42 @@ impl StreamContract {
         }
 
         results
+    }
+
+    /// Employer unlocks a fixed `amount` of the deposit for immediate withdrawal
+    /// (milestone-based unlock), tracked separately from time-based accrual.
+    ///
+    /// Multiple milestones may be set as long as the total unlocked amount does
+    /// not exceed the remaining (unwithdrawn) deposit. The employee claims the
+    /// unlocked amount via the normal [`withdraw`] call.
+    ///
+    /// # Errors
+    /// - Panics if stream not found or caller is not the stream's employer
+    /// - Panics if stream is Cancelled or Exhausted
+    /// - E023 if `amount` ≤ 0
+    /// - E027 if the total unlocked amount would exceed the remaining deposit
+    pub fn set_milestone(env: Env, employer: Address, stream_id: u64, amount: i128) {
+        employer.require_auth();
+        let mut stream = load_stream(&env, stream_id).expect(ERR_STREAM_NOT_FOUND);
+        assert_eq!(stream.employer, employer, "{}", ERR_NOT_EMPLOYER);
+        assert!(
+            stream.status == StreamStatus::Active || stream.status == StreamStatus::Paused,
+            "{}",
+            ERR_STREAM_ALREADY_ENDED
+        );
+        validate_top_up(amount);
+        let unlocked = stream
+            .unlocked
+            .checked_add(amount)
+            .expect("unlocked overflow");
+        assert!(
+            unlocked <= stream.deposit - stream.withdrawn,
+            "{}",
+            ERR_MILESTONE_EXCEEDS
+        );
+        stream.unlocked = unlocked;
+        save_stream(&env, &stream);
+        events::milestone_unlocked(&env, stream_id, &employer, amount);
     }
 
     /// Employer tops up an active stream with additional funds.
@@ -498,10 +598,7 @@ impl StreamContract {
         let token_client = token::Client::new(&env, &stream.token);
         token_client.transfer(&employer, &env.current_contract_address(), &amount);
 
-        stream.deposit = stream
-            .deposit
-            .checked_add(amount)
-            .expect(ERR_OVERFLOW);
+        stream.deposit = stream.deposit.checked_add(amount).expect(ERR_OVERFLOW);
         save_stream(&env, &stream);
         events::topped_up(&env, stream_id, &employer, amount);
     }
@@ -524,7 +621,12 @@ impl StreamContract {
         employer.require_auth();
         let mut stream = load_stream(&env, stream_id).expect(ERR_STREAM_NOT_FOUND);
         assert_eq!(stream.employer, employer, "{}", ERR_NOT_EMPLOYER);
-        assert_eq!(stream.status, StreamStatus::Active, "{}", ERR_STREAM_NOT_ACTIVE);
+        assert_eq!(
+            stream.status,
+            StreamStatus::Active,
+            "{}",
+            ERR_STREAM_NOT_ACTIVE
+        );
         stream.status = StreamStatus::Paused;
         save_stream(&env, &stream);
         events::stream_status_changed(&env, stream_id, &StreamStatus::Paused);
@@ -547,7 +649,12 @@ impl StreamContract {
         employer.require_auth();
         let mut stream = load_stream(&env, stream_id).expect(ERR_STREAM_NOT_FOUND);
         assert_eq!(stream.employer, employer, "{}", ERR_NOT_EMPLOYER);
-        assert_eq!(stream.status, StreamStatus::Paused, "{}", ERR_STREAM_NOT_PAUSED);
+        assert_eq!(
+            stream.status,
+            StreamStatus::Paused,
+            "{}",
+            ERR_STREAM_NOT_PAUSED
+        );
         stream.last_withdraw_time = env.ledger().timestamp();
         stream.status = StreamStatus::Active;
         save_stream(&env, &stream);
@@ -878,10 +985,7 @@ impl StreamContract {
     /// # Returns
     /// Version as `u32`.
     pub fn version(env: Env) -> u32 {
-        env.storage()
-            .instance()
-            .get(&DataKey::Version)
-            .unwrap_or(0)
+        env.storage().instance().get(&DataKey::Version).unwrap_or(0)
     }
 
     /// Return the total number of streams ever created.

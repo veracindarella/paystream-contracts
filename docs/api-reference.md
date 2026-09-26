@@ -154,6 +154,40 @@ stellar contract invoke --id <STREAM_ID> --source <ADMIN_KEY> --network testnet 
 
 ---
 
+### `set_protocol_fee`
+
+Admin sets the protocol fee (basis points) deducted from deposits at stream creation. Default 0; capped at 100 bps (1%).
+
+**Caller:** Admin
+
+| Parameter | Type | Description |
+|---|---|---|
+| `admin` | `Address` | Must match stored admin |
+| `nonce` | `u64` | Current admin nonce |
+| `fee_bps` | `u32` | Fee in basis points (≤ 100) |
+
+**Errors:** E012 if not admin; E009 if nonce is wrong; E025 if `fee_bps` > 100
+
+---
+
+### `set_treasury`
+
+Admin sets the address receiving protocol fees (defaults to the admin).
+
+| Parameter | Type | Description |
+|---|---|---|
+| `admin` | `Address` | Must match stored admin |
+| `nonce` | `u64` | Current admin nonce |
+| `treasury` | `Address` | Fee recipient |
+
+---
+
+### `protocol_fee`
+
+Returns the current protocol fee in basis points (`u32`).
+
+---
+
 ### `create_stream`
 
 Employer creates a salary stream and deposits funds into the contract escrow.
@@ -168,6 +202,9 @@ Employer creates a salary stream and deposits funds into the contract escrow.
 | `deposit` | `i128` | Total tokens to lock in escrow |
 | `rate_per_second` | `i128` | Tokens streamed per second |
 | `stop_time` | `u64` | Hard stop timestamp (0 = indefinite) |
+| `cliff_time` | `u64` | Vesting cliff; nothing is claimable before it (0 = no cliff) |
+
+If a protocol fee is set, `deposit * fee_bps / 10_000` is sent to the treasury and `stream.deposit` stores the post-fee amount.
 
 **Returns:** `u64` — the new stream ID
 
@@ -178,6 +215,7 @@ Employer creates a salary stream and deposits funds into the contract escrow.
 - E001 if `rate_per_second` ≤ 0
 - E008 if `rate_per_second` > 1,000,000,000
 - Panics if `stop_time` is in the past (when non-zero)
+- E026 if `cliff_time` is non-zero and not between now and `stop_time`
 - Panics if `employer` == `employee`
 - Panics if token transfer fails (insufficient balance or allowance)
 
@@ -190,7 +228,8 @@ stellar contract invoke --id <STREAM_ID> --source <EMPLOYER_KEY> --network testn
     --token_address <TOKEN_ID> \
     --deposit 1000000 \
     --rate_per_second 100 \
-    --stop_time 0
+    --stop_time 0 \
+    --cliff_time 0
 ```
 
 ---
@@ -309,6 +348,22 @@ Employer adds more funds to an active stream.
 stellar contract invoke --id <STREAM_ID> --source <EMPLOYER_KEY> --network testnet \
   -- top_up --employer <EMPLOYER_ADDRESS> --stream_id 1 --amount 500000
 ```
+
+---
+
+### `set_milestone`
+
+Employer unlocks a fixed amount of the deposit for immediate withdrawal, tracked separately from time-based accrual. Multiple milestones may be set up to the remaining deposit; the employee claims them via `withdraw`. Emits a `milestone` event `(employer, amount)`.
+
+**Caller:** Employer
+
+| Parameter | Type | Description |
+|---|---|---|
+| `employer` | `Address` | Stream employer |
+| `stream_id` | `u64` | Stream ID |
+| `amount` | `i128` | Amount to unlock (> 0) |
+
+**Errors:** E023 if `amount` ≤ 0; E027 if total unlocked exceeds remaining deposit; panics if not employer or stream ended
 
 ---
 
@@ -480,6 +535,8 @@ Read the full state of a stream by ID.
 | `last_withdraw_time` | `u64` | Timestamp of last withdrawal or resume |
 | `status` | `StreamStatus` | Active / Paused / Cancelled / Exhausted |
 | `locked` | `bool` | Reentrancy guard (always false at rest) |
+| `cliff_time` | `u64` | Vesting cliff timestamp (0 = none); claimable is 0 before it |
+| `unlocked` | `i128` | Milestone-unlocked amount awaiting withdrawal |
 
 **Errors:**
 - Panics if stream not found

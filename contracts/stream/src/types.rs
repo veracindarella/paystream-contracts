@@ -36,6 +36,11 @@ pub struct Stream {
     /// contract.  If a future upgrade introduces a callback hook the guard
     /// will catch it.
     pub locked: bool,
+    /// Vesting cliff timestamp; nothing accrues as claimable before it (0 = no cliff).
+    pub cliff_time: u64,
+    /// Milestone-unlocked amount awaiting withdrawal, tracked separately from
+    /// time-based accrual.
+    pub unlocked: i128,
 }
 
 /// Parameters for a single stream in a batch create call.
@@ -72,6 +77,10 @@ pub enum DataKey {
     EmployeeStreams(Address),
     /// Contract version written by migrate() for off-chain upgrade verification.
     Version,
+    /// Protocol fee in basis points charged on stream creation (default 0).
+    ProtocolFeeBps,
+    /// Address receiving protocol fees (defaults to the admin).
+    Treasury,
 }
 
 /// Contract error codes – panic messages reference these names so callers can
@@ -102,6 +111,9 @@ pub enum DataKey {
 /// | E021 | ERR_ADMIN_NOT_SET       | Admin has not been initialised                     |
 /// | E022 | ERR_STOP_TIME_PAST      | `stop_time` must be in the future                  |
 /// | E023 | ERR_AMOUNT_NOT_POSITIVE | Amount must be positive                            |
+/// | E025 | ERR_FEE_TOO_HIGH        | `fee_bps` exceeds MAX_PROTOCOL_FEE_BPS             |
+/// | E026 | ERR_INVALID_CLIFF       | `cliff_time` not between now and `stop_time`      |
+/// | E027 | ERR_MILESTONE_EXCEEDS   | Milestone exceeds the remaining deposit            |
 pub const ERR_ZERO_RATE: &str = "E001: rate_per_second must be greater than zero";
 pub const ERR_ZERO_DEPOSIT: &str = "E002: deposit must be positive";
 pub const ERR_REENTRANT: &str = "E003: reentrant withdraw detected";
@@ -114,3 +126,6 @@ pub const ERR_BAD_NONCE: &str = "E009: invalid admin nonce";
 pub const ERR_NO_PENDING_ADMIN: &str = "E010: no pending admin set";
 pub const ERR_NOT_PENDING_ADMIN: &str = "E011: not the pending admin";
 pub const ERR_BAD_PENDING_NONCE: &str = "E024: invalid pending admin nonce";
+pub const ERR_FEE_TOO_HIGH: &str = "E025: protocol fee exceeds maximum";
+pub const ERR_INVALID_CLIFF: &str = "E026: cliff_time must be between now and stop_time";
+pub const ERR_MILESTONE_EXCEEDS: &str = "E027: milestone exceeds remaining deposit";

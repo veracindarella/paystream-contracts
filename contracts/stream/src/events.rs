@@ -42,8 +42,14 @@ pub fn contract_paused(env: &Env, paused: bool) {
 
 /// Emitted when `update_rate` changes the stream's `rate_per_second`.
 pub fn rate_updated(env: &Env, stream_id: u64, old_rate: i128, new_rate: i128) {
+    env.events()
+        .publish((symbol_short!("rate_upd"), stream_id), (old_rate, new_rate));
+}
+
+/// Emitted when the employer unlocks a milestone amount on a stream.
+pub fn milestone_unlocked(env: &Env, stream_id: u64, employer: &Address, amount: i128) {
     env.events().publish(
-        (symbol_short!("rate_upd"), stream_id),
-        (old_rate, new_rate),
+        (symbol_short!("milestone"), stream_id),
+        (employer.clone(), amount),
     );
 }

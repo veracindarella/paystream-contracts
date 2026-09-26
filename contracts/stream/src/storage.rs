@@ -49,7 +49,6 @@ pub fn set_admin(env: &Env, admin: &Address) {
     env.storage().instance().set(&DataKey::Admin, admin);
 }
 
-#[allow(dead_code)]
 pub fn get_admin(env: &Env) -> Address {
     env.storage()
         .instance()
@@ -74,16 +73,12 @@ pub fn set_pending_admin_nonce(env: &Env, nonce: u64) {
 }
 
 pub fn get_pending_admin_nonce(env: &Env) -> Option<u64> {
-    env.storage()
-        .instance()
-        .get(&DataKey::PendingAdminNonce)
+    env.storage().instance().get(&DataKey::PendingAdminNonce)
 }
 
 pub fn clear_pending_admin(env: &Env) {
     env.storage().instance().remove(&DataKey::PendingAdmin);
-    env.storage()
-        .instance()
-        .remove(&DataKey::PendingAdminNonce);
+    env.storage().instance().remove(&DataKey::PendingAdminNonce);
 }
 
 pub fn get_min_deposit(env: &Env) -> i128 {
@@ -97,6 +92,30 @@ pub fn set_min_deposit(env: &Env, amount: i128) {
     env.storage().instance().set(&DataKey::MinDeposit, &amount);
 }
 
+pub fn get_protocol_fee_bps(env: &Env) -> u32 {
+    env.storage()
+        .instance()
+        .get(&DataKey::ProtocolFeeBps)
+        .unwrap_or(0)
+}
+
+pub fn set_protocol_fee_bps(env: &Env, fee_bps: u32) {
+    env.storage()
+        .instance()
+        .set(&DataKey::ProtocolFeeBps, &fee_bps);
+}
+
+pub fn get_treasury(env: &Env) -> Address {
+    env.storage()
+        .instance()
+        .get(&DataKey::Treasury)
+        .unwrap_or_else(|| get_admin(env))
+}
+
+pub fn set_treasury(env: &Env, treasury: &Address) {
+    env.storage().instance().set(&DataKey::Treasury, treasury);
+}
+
 /// Tokens earned by employee up to `now` that have not yet been withdrawn.
 ///
 /// All arithmetic uses checked or saturating operations to prevent overflow
@@ -105,6 +124,18 @@ pub fn claimable_amount(stream: &Stream, now: u64) -> i128 {
     match stream.status {
         StreamStatus::Cancelled | StreamStatus::Exhausted => return 0,
         _ => {}
+    }
+    // remaining can never be negative for a well-formed stream, but clamp to 0
+    // defensively.
+    let remaining = stream
+        .deposit
+        .checked_sub(stream.withdrawn)
+        .unwrap_or(0)
+        .max(0);
+    // Milestone unlocks are claimable immediately, independent of time accrual.
+    let unlocked = stream.unlocked.min(remaining).max(0);
+    if stream.cliff_time > 0 && now < stream.cliff_time {
+        return unlocked;
     }
     // Cap at stop_time in one expression to avoid a branch in the common case.
     let effective_end = if stream.stop_time > 0 && now > stream.stop_time {
@@ -121,15 +152,7 @@ pub fn claimable_amount(stream: &Stream, now: u64) -> i128 {
         .checked_mul(stream.rate_per_second)
         .expect(ERR_OVERFLOW);
 
-    // remaining can never be negative for a well-formed stream, but clamp to 0
-    // defensively.
-    let remaining = stream
-        .deposit
-        .checked_sub(stream.withdrawn)
-        .unwrap_or(0)
-        .max(0);
-
-    earned.min(remaining).max(0)
+    unlocked + earned.min(remaining - unlocked).max(0)
 }
 
 /// Append `stream_id` to the employer's stream index.
