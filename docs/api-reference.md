@@ -754,13 +754,45 @@ Initialise the token with an admin and an initial supply minted to the admin.
 |---|---|---|
 | `admin` | `Address` | Token admin address |
 | `initial_supply` | `i128` | Tokens minted to admin on init |
+| `name` | `String` | Token name (SEP-41 metadata) |
+| `symbol` | `String` | Token symbol (SEP-41 metadata) |
 
 **Returns:** nothing
 
 **Example:**
 ```bash
 stellar contract invoke --id <TOKEN_ID> --source <ADMIN_KEY> --network testnet \
-  -- initialize --admin <ADMIN_ADDRESS> --initial_supply 1000000000
+  -- initialize --admin <ADMIN_ADDRESS> --initial_supply 1000000000 --name "PayStream Token" --symbol PST
+```
+
+---
+
+### `name` / `symbol` / `decimals`
+
+SEP-41 metadata queries. `name` and `symbol` return the `String` values set at initialisation; `decimals` returns `7` (`u32`).
+
+**Example:**
+```bash
+stellar contract invoke --id <TOKEN_ID> --network testnet -- decimals
+```
+
+---
+
+### `allowance`
+
+Return the remaining amount `spender` may transfer on behalf of `owner`.
+
+| Parameter | Type | Description |
+|---|---|---|
+| `owner` | `Address` | Token owner |
+| `spender` | `Address` | Approved spender |
+
+**Returns:** `i128` — remaining allowance; `0` if none has been set
+
+**Example:**
+```bash
+stellar contract invoke --id <TOKEN_ID> --network testnet \
+  -- allowance --owner <OWNER_ADDRESS> --spender <SPENDER_ADDRESS>
 ```
 
 ---
@@ -987,6 +1019,19 @@ Emitted by `update_rate` when the employer changes the stream's `rate_per_second
 
 **Topics:** `("rate_upd", stream_id)`
 **Data:** `(old_rate, new_rate)`
+
+---
+
+### Token events (SEP-41)
+
+Emitted by the token contract. Balances and allowances have their storage TTL extended (~1 year threshold, ~2 years extend-to) on every read and write.
+
+| Event | Emitted by | Topics | Data |
+|---|---|---|---|
+| `transfer` | `transfer`, `transfer_from` | `("transfer", from, to)` | `amount: i128` |
+| `approve` | `approve` | `("approve", owner, spender)` | `amount: i128` |
+| `mint` | `initialize`, `mint` | `("mint", admin, to)` | `amount: i128` |
+| `burn` | `burn`, `burn_from` | `("burn", from)` | `amount: i128` |
 
 ---
 

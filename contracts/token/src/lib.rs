@@ -2,6 +2,7 @@
 
 #![no_std]
 
+mod events;
 mod storage;
 mod types;
 
@@ -9,10 +10,13 @@ mod types;
 mod test;
 
 use crate::storage::{
-    allowance, balance_of, get_admin, set_admin, set_allowance, set_balance, set_total_supply,
-    total_supply,
+    allowance, balance_of, get_admin, get_name, get_symbol, set_admin, set_allowance, set_balance,
+    set_metadata, set_total_supply, total_supply,
 };
-use soroban_sdk::{contract, contractimpl, Address, Env};
+use soroban_sdk::{contract, contractimpl, Address, Env, String};
+
+/// Number of decimal places used by the token (SEP-41 `decimals`).
+pub const DECIMALS: u32 = 7;
 
 #[contract]
 pub struct TokenContract;
@@ -27,14 +31,47 @@ impl TokenContract {
     /// # Parameters
     /// - `admin` — address that becomes the token admin (can mint)
     /// - `initial_supply` — tokens minted to `admin` on initialisation
+    /// - `name` — human-readable token name (SEP-41 metadata)
+    /// - `symbol` — token ticker symbol (SEP-41 metadata)
     ///
     /// # Errors
     /// - Panics if `admin` auth fails
-    pub fn initialize(env: Env, admin: Address, initial_supply: i128) {
+    pub fn initialize(
+        env: Env,
+        admin: Address,
+        initial_supply: i128,
+        name: String,
+        symbol: String,
+    ) {
         admin.require_auth();
         set_admin(&env, &admin);
+        set_metadata(&env, &name, &symbol);
         set_balance(&env, &admin, initial_supply);
         set_total_supply(&env, initial_supply);
+        events::mint(&env, &admin, &admin, initial_supply);
+    }
+
+    /// Return the token name (SEP-41).
+    pub fn name(env: Env) -> String {
+        get_name(&env)
+    }
+
+    /// Return the token symbol (SEP-41).
+    pub fn symbol(env: Env) -> String {
+        get_symbol(&env)
+    }
+
+    /// Return the number of decimals used by the token (SEP-41).
+    pub fn decimals(_env: Env) -> u32 {
+        DECIMALS
+    }
+
+    /// Return the amount `spender` may transfer on behalf of `owner`.
+    ///
+    /// # Returns
+    /// Remaining allowance as `i128`; 0 if none has been set.
+    pub fn allowance(env: Env, owner: Address, spender: Address) -> i128 {
+        allowance(&env, &owner, &spender)
     }
 
     /// Return the total token supply.
@@ -73,6 +110,7 @@ impl TokenContract {
         assert!(from_bal >= amount, "insufficient balance");
         set_balance(&env, &from, from_bal - amount);
         set_balance(&env, &to, balance_of(&env, &to) + amount);
+        events::transfer(&env, &from, &to, amount);
     }
 
     /// Approve `spender` to transfer up to `amount` tokens on behalf of `owner`.
@@ -86,6 +124,7 @@ impl TokenContract {
     pub fn approve(env: Env, owner: Address, spender: Address, amount: i128) {
         owner.require_auth();
         set_allowance(&env, &owner, &spender, amount);
+        events::approve(&env, &owner, &spender, amount);
     }
 
     /// Transfer `amount` tokens from `from` to `to` using `spender`'s allowance.
@@ -108,6 +147,7 @@ impl TokenContract {
         set_allowance(&env, &from, &spender, allowed - amount);
         set_balance(&env, &from, from_bal - amount);
         set_balance(&env, &to, balance_of(&env, &to) + amount);
+        events::transfer(&env, &from, &to, amount);
     }
 
     /// Mint `amount` new tokens to `to`, increasing total supply.
@@ -128,6 +168,7 @@ impl TokenContract {
         assert!(amount > 0, "amount must be positive");
         set_balance(&env, &to, balance_of(&env, &to) + amount);
         set_total_supply(&env, total_supply(&env) + amount);
+        events::mint(&env, &admin, &to, amount);
     }
 
     /// Burn `amount` tokens from `from`'s own balance, reducing total supply.
@@ -146,6 +187,7 @@ impl TokenContract {
         assert!(bal >= amount, "insufficient balance");
         set_balance(&env, &from, bal - amount);
         set_total_supply(&env, total_supply(&env) - amount);
+        events::burn(&env, &from, amount);
     }
 
     /// Burn `amount` tokens from `from` using `spender`'s allowance.
@@ -171,5 +213,6 @@ impl TokenContract {
         set_allowance(&env, &from, &spender, allowed - amount);
         set_balance(&env, &from, bal - amount);
         set_total_supply(&env, total_supply(&env) - amount);
+        events::burn(&env, &from, amount);
     }
 }

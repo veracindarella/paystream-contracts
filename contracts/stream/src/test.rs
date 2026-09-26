@@ -20,7 +20,12 @@ fn setup() -> (Env, StreamContractClient<'static>) {
 fn setup_token(env: &Env, admin: &Address) -> Address {
     let token_id = env.register(paystream_token::TokenContract, ());
     let token = paystream_token::TokenContractClient::new(env, &token_id);
-    token.initialize(admin, &1_000_000_000);
+    token.initialize(
+        admin,
+        &1_000_000_000,
+        &soroban_sdk::String::from_str(env, "Test Token"),
+        &soroban_sdk::String::from_str(env, "TST"),
+    );
     token_id
 }
 
