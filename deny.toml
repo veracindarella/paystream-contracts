@@ -2,7 +2,7 @@
 # Docs: https://embarkstudios.github.io/cargo-deny/
 #
 # Run locally:  cargo deny check
-# CI:           see .github/workflows/license-check.yml
+# CI:           see .github/workflows/deny.yml
 
 [graph]
 # Check all targets, including wasm32-unknown-unknown
@@ -15,6 +15,7 @@ targets = [
 # Licenses
 # ---------------------------------------------------------------------------
 [licenses]
+version = 2
 # All crates must satisfy at least one of the licenses listed here.
 # Any crate whose license expression cannot be satisfied by this list will
 # cause `cargo deny check licenses` to fail.
@@ -50,11 +51,12 @@ include-dev = true
 # Fetch the RustSec advisory database on every run.
 db-urls = ["https://github.com/rustsec/advisory-db"]
 db-path = "~/.cargo/advisory-db"
-# Fail on any unignored vulnerability or unmaintained crate warning.
-vulnerability = "deny"
-unmaintained = "warn"
+# Config version 2: any crate with a known vulnerability (RustSec advisory)
+# is always denied unless explicitly listed in `ignore`.
+version = 2
+unmaintained = "workspace"
 yanked = "deny"
-notice = "warn"
+ignore = []
 
 # ---------------------------------------------------------------------------
 # Bans  (duplicate / forbidden crates)

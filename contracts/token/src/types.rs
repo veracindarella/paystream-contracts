@@ -8,6 +8,6 @@ pub enum TokenDataKey {
     Allowance(Address, Address),
     TotalSupply,
     Admin,
-    Name,
-    Symbol,
+    PendingAdmin,
+    AdminNonce,
 }

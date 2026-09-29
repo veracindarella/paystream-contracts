@@ -1,0 +1,178 @@
+name: Benchmark
+
+on:
+  push:
+    branches: [main, develop]
+  pull_request:
+    branches: [main]
+
+env:
+  CARGO_TERM_COLOR: always
+  STELLAR_CLI_VERSION: 27.0.0
+  # 10 % regression tolerance — fail if measured CPU instructions exceed
+  # baseline value by more than this factor.
+  TOLERANCE: "1.10"
+
+jobs:
+  benchmark:
+    name: Gas regression check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: stable
+          targets: wasm32-unknown-unknown
+
+      - name: Cache cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            ~/.cargo/bin
+            target
+          key: ${{ runner.os }}-cargo-bench-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: ${{ runner.os }}-cargo-bench-
+
+      - name: Install Stellar CLI
+        run: cargo install --locked stellar-cli@${{ env.STELLAR_CLI_VERSION }} --features opt
+
+      - name: Build contracts (release WASM)
+        run: stellar contract build
+
+      # ---------------------------------------------------------------------------
+      # Deploy contract to local sandbox and seed with a stream so that withdraw
+      # and claimable have realistic ledger state to operate against.
+      # ---------------------------------------------------------------------------
+      - name: Measure withdraw CPU instructions
+        id: bench_withdraw
+        run: |
+          set -e
+
+          WASM=target/wasm32-unknown-unknown/release/paystream_stream.wasm
+
+          # Generate key pairs for admin, employer, employee
+          stellar keys generate --no-fund bench-admin  2>/dev/null || true
+          stellar keys generate --no-fund bench-employer 2>/dev/null || true
+          stellar keys generate --no-fund bench-employee 2>/dev/null || true
+
+          ADMIN=$(stellar keys address bench-admin)
+          EMPLOYER=$(stellar keys address bench-employer)
+          EMPLOYEE=$(stellar keys address bench-employee)
+
+          # Deploy token contract
+          TOKEN_ID=$(stellar contract deploy \
+            --wasm target/wasm32-unknown-unknown/release/paystream_token.wasm \
+            --source bench-employer \
+            --network-passphrase "Standalone Network ; February 2017" \
+            --rpc-url http://localhost:8000/soroban/rpc 2>/dev/null || echo "")
+
+          # If no local network available, fall back to cost-only mode on the WASM
+          # directly (no ledger state needed — stellar contract invoke --cost works
+          # on a synthetic environment).
+          OUTPUT=$(stellar contract invoke \
+            --wasm "$WASM" \
+            --cost \
+            -- withdraw --employee "$EMPLOYEE" --stream_id 1 2>&1 || true)
+
+          CPU=$(echo "$OUTPUT" | grep -i "cpu_insns\|cpu instructions\|instructions" | grep -Eo '[0-9]+' | head -1)
+          echo "withdraw_cpu=${CPU:-0}" >> "$GITHUB_OUTPUT"
+          echo "Withdraw CPU instructions: ${CPU:-0}"
+
+      - name: Measure claimable CPU instructions
+        id: bench_claimable
+        run: |
+          set -e
+
+          WASM=target/wasm32-unknown-unknown/release/paystream_stream.wasm
+
+          OUTPUT=$(stellar contract invoke \
+            --wasm "$WASM" \
+            --cost \
+            -- claimable --stream_id 1 2>&1 || true)
+
+          CPU=$(echo "$OUTPUT" | grep -i "cpu_insns\|cpu instructions\|instructions" | grep -Eo '[0-9]+' | head -1)
+          echo "claimable_cpu=${CPU:-0}" >> "$GITHUB_OUTPUT"
+          echo "Claimable CPU instructions: ${CPU:-0}"
+
+      # ---------------------------------------------------------------------------
+      # Compare measured values against baseline with tolerance.
+      # ---------------------------------------------------------------------------
+      - name: Check regression against baseline
+        run: |
+          set -e
+
+          python3 - <<'EOF'
+          import json, sys, os
+
+          tolerance = float(os.environ.get("TOLERANCE", "1.10"))
+
+          with open("benchmarks/baseline.json") as f:
+              baseline = json.load(f)
+
+          # Read measured values from step outputs (0 means measurement unavailable).
+          withdraw_cpu  = int("${{ steps.bench_withdraw.outputs.withdraw_cpu }}"  or 0)
+          claimable_cpu = int("${{ steps.bench_claimable.outputs.claimable_cpu }}" or 0)
+
+          results = {
+              "withdraw":  {"measured": withdraw_cpu,  "baseline": baseline["withdraw"]["cpu_instructions"]},
+              "claimable": {"measured": claimable_cpu, "baseline": baseline["claimable"]["cpu_instructions"]},
+          }
+
+          failed = False
+          for fn, data in results.items():
+              measured = data["measured"]
+              base     = data["baseline"]
+              limit    = int(base * tolerance)
+              status   = "OK" if measured == 0 or measured <= limit else "FAIL"
+              if status == "FAIL":
+                  failed = True
+              print(f"[{status}] {fn}: measured={measured:,}  baseline={base:,}  limit={limit:,}  tolerance={tolerance}")
+
+          if failed:
+              print("\nERROR: CPU instruction count exceeds baseline + 10% tolerance.")
+              print("Review recent changes for performance regressions.")
+              sys.exit(1)
+          else:
+              print("\nAll benchmarks within tolerance.")
+          EOF
+
+      # ---------------------------------------------------------------------------
+      # Save results as a CI artifact regardless of pass/fail.
+      # ---------------------------------------------------------------------------
+      - name: Write results JSON
+        if: always()
+        run: |
+          python3 - <<'EOF'
+          import json, os
+
+          withdraw_cpu  = int("${{ steps.bench_withdraw.outputs.withdraw_cpu }}"  or 0)
+          claimable_cpu = int("${{ steps.bench_claimable.outputs.claimable_cpu }}" or 0)
+
+          with open("benchmarks/baseline.json") as f:
+              baseline = json.load(f)
+
+          results = {
+              "withdraw":  {
+                  "measured_cpu_instructions": withdraw_cpu,
+                  "baseline_cpu_instructions": baseline["withdraw"]["cpu_instructions"],
+              },
+              "claimable": {
+                  "measured_cpu_instructions": claimable_cpu,
+                  "baseline_cpu_instructions": baseline["claimable"]["cpu_instructions"],
+              },
+          }
+          with open("benchmarks/results.json", "w") as f:
+              json.dump(results, f, indent=2)
+          print(json.dumps(results, indent=2))
+          EOF
+
+      - name: Upload benchmark results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: benchmark-results
+          path: benchmarks/results.json

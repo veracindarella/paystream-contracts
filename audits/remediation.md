@@ -81,4 +81,14 @@ pub fn initialize(env: Env, admin: Address) {
 | Environment | Ready |
 |-------------|-------|
 | Testnet     | ✅ Yes |
-| Mainnet     | ❌ Pending LOW-02 resolution |
+| Mainnet     | ❌ Pending LOW-02 resolution + delta audit (SEC-07) |
+
+---
+
+## Planned: Delta Audit (SEC-07)
+
+A follow-up audit covering all changes since the 2026-04-23 Trail of Bits engagement is
+required before mainnet deployment. See [2026-next-audit-scope.md](2026-next-audit-scope.md)
+for the full scope, acceptance criteria, and auditor candidates.
+
+When the audit completes, add a new section here following the format above.

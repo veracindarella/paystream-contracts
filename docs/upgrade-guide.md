@@ -75,3 +75,7 @@ In summary:
 3. Confirm `token::transfer` is still a leaf call with no callback path.
 4. Run `test_reentrant_withdraw_rejected`.
 5. Update `docs/security/reentrancy-analysis.md` with the new SDK version and review date.
+
+## Soroban SDK Upgrades
+
+Bumping the `soroban-sdk` dependency itself is covered in [soroban-sdk-upgrade.md](soroban-sdk-upgrade.md).

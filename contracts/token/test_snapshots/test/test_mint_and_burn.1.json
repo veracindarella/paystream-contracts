@@ -56,6 +56,9 @@
                     "hi": 0,
                     "lo": 500
                   }
+                },
+                {
+                  "u64": 0
                 }
               ]
             }
@@ -238,24 +241,12 @@
                         "key": {
                           "vec": [
                             {
-                              "symbol": "Name"
+                              "symbol": "AdminNonce"
                             }
                           ]
                         },
                         "val": {
-                          "string": "PayStream Token"
-                        }
-                      },
-                      {
-                        "key": {
-                          "vec": [
-                            {
-                              "symbol": "Symbol"
-                            }
-                          ]
-                        },
-                        "val": {
-                          "string": "PST"
+                          "u64": 1
                         }
                       },
                       {

@@ -1,0 +1,1 @@
+| lib.rs:9:5:11:5 | fn bad_set_admin | Contract function 'bad_set_admin' mutates storage without calling require_auth. |

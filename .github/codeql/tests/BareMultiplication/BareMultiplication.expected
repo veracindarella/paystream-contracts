@@ -1,0 +1,1 @@
+| lib.rs:2:5:2:18 | ... * ... | Bare '*' may overflow i128; use checked_mul instead. |

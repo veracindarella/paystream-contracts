@@ -109,7 +109,7 @@ PayStream streams salary from an employer to an employee in real-time on the Ste
 
 | ID | Risk | Likelihood | Impact | Notes |
 |---|---|---|---|---|
-| RR-01 | Admin key compromise | Low | Critical | Mitigated by nonce (replay protection) but not by multi-sig; consider a multisig admin in production |
+| RR-01 | Admin key compromise | Low | Critical | Mitigated by nonce (replay protection) but not by multi-sig; **for mainnet, use a Stellar native multisig or deployed multisig contract as the admin** — see `docs/security/admin-multisig.md` (SEC-01 / #30) |
 | RR-02 | Malicious token contract with re-entrancy hook | Very Low | High | Soroban host prevents true re-entrancy today; `locked` flag is defence-in-depth |
 | RR-03 | Stellar network halt causes stream data to expire before TTL extension | Very Low | Medium | TTL set to ~2 years; network halts of that duration are not credible |
 | RR-04 | `stop_time` manipulation by employer (set far future) | Low | Low | Employee can still withdraw at any time; no harm from a far-future stop_time |
@@ -127,6 +127,7 @@ PayStream streams salary from an employer to an employee in real-time on the Ste
 | Overflow protection | Pre-existing | `checked_mul` / `checked_add` throughout; `saturating_sub` for elapsed time |
 | Auth enforcement | Pre-existing | `require_auth()` on every state-mutating entry point |
 | On-chain event log | Pre-existing | All state changes emit events for auditability |
+| Emergency drain (planned) | #32 (SEC-03) | `propose_emergency_drain` + `emergency_drain` two-step; requires contract paused; see `docs/security/emergency-drain.md` |
 
 ---
 
