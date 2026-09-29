@@ -11,13 +11,13 @@ jobs:
     name: Proptest fuzz claimable
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7.0.1
 
       - name: Install Rust stable
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
 
       - name: Cache cargo
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: |
             ~/.cargo/registry
@@ -31,3 +31,9 @@ jobs:
 
       - name: Run proptest fuzz (1 000 000 iterations) — withdraw
         run: cargo test --package paystream-stream-fuzz --bin fuzz_withdraw
+
+      - name: Run proptest fuzz (1 000 000 iterations) — create_stream
+        run: cargo test --package paystream-stream-fuzz --bin fuzz_create_stream
+
+      - name: Run proptest fuzz (500 000 iterations) — admin nonce
+        run: cargo test --package paystream-stream-fuzz --bin fuzz_admin_nonce

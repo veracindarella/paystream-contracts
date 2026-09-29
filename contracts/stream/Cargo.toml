@@ -16,3 +16,4 @@ paystream-token = { path = "../token", features = ["testutils"] }
 
 [features]
 testutils = ["soroban-sdk/testutils"]
+wasm-tests = []

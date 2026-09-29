@@ -50,6 +50,9 @@
                     "hi": 0,
                     "lo": 500
                   }
+                },
+                {
+                  "u64": 0
                 }
               ]
             }
@@ -226,6 +229,18 @@
                         },
                         "val": {
                           "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAFCT4"
+                        }
+                      },
+                      {
+                        "key": {
+                          "vec": [
+                            {
+                              "symbol": "AdminNonce"
+                            }
+                          ]
+                        },
+                        "val": {
+                          "u64": 1
                         }
                       },
                       {

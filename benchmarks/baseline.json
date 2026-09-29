@@ -1,0 +1,9 @@
+{
+  "_comment": "Baseline CPU instruction counts for gas regression detection. Values sourced from benchmarks/gas-optimization-report.md (2026-04-23). CI fails if measured instructions exceed baseline * 1.10 (10% tolerance).",
+  "withdraw": {
+    "cpu_instructions": 1487200
+  },
+  "claimable": {
+    "cpu_instructions": 701300
+  }
+}

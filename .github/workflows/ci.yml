@@ -8,55 +8,71 @@ on:
 
 env:
   CARGO_TERM_COLOR: always
+  STELLAR_CLI_VERSION: 27.0.0
 
 jobs:
   test:
-    name: Build & Test
+    name: Build & Test (${{ matrix.toolchain }})
     runs-on: ubuntu-latest
+    # Nightly failures are reported but do not block the workflow.
+    continue-on-error: ${{ matrix.toolchain == 'nightly' }}
+    strategy:
+      fail-fast: false
+      matrix:
+        # pinned = channel from rust-toolchain.toml, msrv = rust-version from Cargo.toml
+        toolchain: [pinned, stable, beta, msrv, nightly]
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7.0.1
 
       - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@master
+        uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de # master
         with:
-          toolchain: stable
+          toolchain: ${{ steps.toolchain.outputs.name }}
           targets: wasm32-unknown-unknown
           components: rustfmt, clippy
 
       - name: Cache cargo
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: |
             ~/.cargo/registry
             ~/.cargo/git
             target
-          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
-          restore-keys: ${{ runner.os }}-cargo-
+          key: ${{ runner.os }}-cargo-${{ matrix.toolchain }}-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: ${{ runner.os }}-cargo-${{ matrix.toolchain }}-
 
       - name: Check formatting
+        if: matrix.toolchain == 'pinned'
         run: cargo fmt --check
 
       - name: Clippy
+        if: matrix.toolchain == 'pinned'
         run: cargo clippy --all-targets -- -D warnings
 
       - name: Test
         run: cargo test
+
+      - name: Report nightly failure
+        if: failure() && matrix.toolchain == 'nightly'
+        run: |
+          echo "::warning::Tests failed on nightly Rust (non-blocking)"
+          echo "⚠️ Nightly Rust build/tests failed (non-blocking)." >> "$GITHUB_STEP_SUMMARY"
 
   build-wasm:
     name: Build WASM
     runs-on: ubuntu-latest
     needs: test
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7.0.1
 
       - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@master
+        uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de # master
         with:
           toolchain: stable
           targets: wasm32-unknown-unknown
 
       - name: Cache cargo
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: |
             ~/.cargo/registry
@@ -67,13 +83,41 @@ jobs:
           restore-keys: ${{ runner.os }}-cargo-wasm-
 
       - name: Install Stellar CLI
-        run: cargo install --locked stellar-cli --features opt
+        run: cargo install --locked stellar-cli@${{ env.STELLAR_CLI_VERSION }} --features opt
 
       - name: Build contracts
         run: stellar contract build
 
+      - name: Check WASM sizes
+        run: |
+          MAX=$((128 * 1024))   # Soroban contract size limit
+          WARN=$((100 * 1024))  # ~20% buffer
+          status=0
+          {
+            echo "### WASM sizes"
+            echo ""
+            echo "| Contract | Size (bytes) | Size (KB) | Status |"
+            echo "|---|---|---|---|"
+          } >> "$GITHUB_STEP_SUMMARY"
+          for f in target/wasm32-unknown-unknown/release/*.wasm; do
+            size=$(stat -c %s "$f")
+            name=$(basename "$f")
+            if [ "$size" -gt "$MAX" ]; then
+              state="❌ exceeds 128 KB"
+              echo "::error file=$f::$name is $size bytes, exceeding the 128 KB limit"
+              status=1
+            elif [ "$size" -gt "$WARN" ]; then
+              state="⚠️ exceeds 100 KB"
+              echo "::warning file=$f::$name is $size bytes, approaching the 128 KB limit"
+            else
+              state="✅ ok"
+            fi
+            echo "| $name | $size | $((size / 1024)) | $state |" >> "$GITHUB_STEP_SUMMARY"
+          done
+          exit $status
+
       - name: Upload WASM artifacts
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7.0.1
         with:
           name: wasm-contracts
           path: target/wasm32-unknown-unknown/release/*.wasm

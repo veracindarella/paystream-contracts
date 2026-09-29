@@ -1,0 +1,38 @@
+name: Integration
+
+on:
+  pull_request:
+    branches: [main]
+
+env:
+  CARGO_TERM_COLOR: always
+  STELLAR_CLI_VERSION: 27.0.0
+
+jobs:
+  integration:
+    name: Soroban sandbox integration tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7.0.1
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
+        with:
+          targets: wasm32-unknown-unknown, wasm32v1-none
+
+      - name: Cache cargo
+        uses: actions/cache@v6
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            ~/.cargo/bin
+            target
+          key: ${{ runner.os }}-cargo-integration-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: ${{ runner.os }}-cargo-integration-
+
+      - name: Install Stellar CLI
+        run: command -v stellar || cargo install --locked stellar-cli@${{ env.STELLAR_CLI_VERSION }} --features opt
+
+      - name: Run integration tests
+        run: make integration-test

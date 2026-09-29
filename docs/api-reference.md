@@ -2,6 +2,8 @@
 
 Full documentation for every PayStream contract function: parameters, return values, errors, and CLI examples.
 
+See also: [Error Codes](#error-codes) · [Stream Status Lifecycle](#stream-status-lifecycle) · [Storage Layout](storage-layout.md) (for off-chain indexers)
+
 ---
 
 ## Stream Contract
@@ -603,6 +605,47 @@ stellar contract invoke --id <STREAM_ID> --source <ANY_KEY> --network testnet \
   -- claimable --stream_id 1
 ```
 
+#### Worked examples
+
+Each example mirrors a scenario covered in `contracts/stream/src/test.rs`.
+
+**1. Normal accrual** — `deposit = 1_000`, `rate_per_second = 10`, `stop_time = 0`, `last_withdraw_time = 0`, `withdrawn = 0`, `now = 50`
+
+```
+elapsed   = 50 - 0            = 50
+earned    = 50 * 10           = 500
+remaining = 1_000 - 0         = 1_000
+claimable = min(500, 1_000)   = 500
+```
+
+**2. With `stop_time`** — `deposit = 1_000`, `rate_per_second = 10`, `stop_time = 60`, `last_withdraw_time = 0`, `withdrawn = 0`, `now = 100`
+
+```
+effective_end = min(now, stop_time) = 60
+elapsed       = 60 - 0              = 60
+earned        = 60 * 10             = 600
+remaining     = 1_000 - 0           = 1_000
+claimable     = min(600, 1_000)     = 600   # time after stop_time never accrues
+```
+
+**3. After pause/resume** — `deposit = 10_000`, `rate_per_second = 10`; paused at T=100, resumed at T=200 (`resume_stream` sets `last_withdraw_time = 200`), `withdrawn = 0`, `now = 250`
+
+```
+elapsed   = 250 - 200          = 50    # the paused interval 100..200 is excluded
+earned    = 50 * 10            = 500
+remaining = 10_000 - 0         = 10_000
+claimable = min(500, 10_000)   = 500
+```
+
+> Resuming resets `last_withdraw_time`, so tokens accrued before the pause but not yet withdrawn are not carried over. Employees should withdraw before a stream is paused.
+
+**4. Exhausted stream** — `deposit = 1_000`, `rate_per_second = 10`, fully withdrawn at T=100 (`withdrawn = 1_000`, `status = Exhausted`), `now = 500`
+
+```
+status == Exhausted  → claimable = 0
+(formula would also give min(400 * 10, 1_000 - 1_000) = min(4_000, 0) = 0)
+```
+
 ---
 
 ### `claimable_at`
@@ -737,6 +780,27 @@ Return the current admin nonce. Use this to build the next admin transaction.
 ```bash
 stellar contract invoke --id <STREAM_ID> --source <ANY_KEY> --network testnet \
   -- admin_nonce
+```
+
+---
+
+### `admin`
+
+Return the current contract admin address.
+
+Off-chain tools use this to discover the admin without decoding raw ledger state.
+
+**Caller:** Anyone
+
+**Returns:** `Address`
+
+**Errors:**
+- Panics with "admin not set" (E021) if the contract has not been initialised.
+
+**Example:**
+```bash
+stellar contract invoke --id <STREAM_ID> --source <ANY_KEY> --network testnet \
+  -- admin
 ```
 
 ---
@@ -895,13 +959,38 @@ Approve a spender to transfer tokens on behalf of the owner.
 | `owner` | `Address` | Token owner |
 | `spender` | `Address` | Address being approved |
 | `amount` | `i128` | Allowance amount |
+| `expiration_ledger` | `u32` | Last ledger sequence at which the allowance is valid |
 
 **Returns:** nothing
+
+**Errors:**
+- Panics if `amount` > 0 and `expiration_ledger` is before the current ledger
 
 **Example:**
 ```bash
 stellar contract invoke --id <TOKEN_ID> --source <OWNER_KEY> --network testnet \
-  -- approve --owner <OWNER_ADDRESS> --spender <SPENDER_ADDRESS> --amount 5000
+  -- approve --owner <OWNER_ADDRESS> --spender <SPENDER_ADDRESS> --amount 5000 --expiration_ledger 1000000
+```
+
+---
+
+### `allowance`
+
+Return the allowance granted by `owner` to `spender`.
+
+**Caller:** Anyone
+
+| Parameter | Type | Description |
+|---|---|---|
+| `owner` | `Address` | Token owner |
+| `spender` | `Address` | Approved spender |
+
+**Returns:** `(i128, u32)` — `(amount, expiration_ledger)`; `(0, 0)` if none
+
+**Example:**
+```bash
+stellar contract invoke --id <TOKEN_ID> --source <ANY_KEY> --network testnet \
+  -- allowance --owner <OWNER_ADDRESS> --spender <SPENDER_ADDRESS>
 ```
 
 ---
@@ -922,8 +1011,10 @@ Transfer tokens on behalf of `from` using an existing allowance.
 **Returns:** nothing
 
 **Errors:**
+- Panics if the allowance has expired
 - Panics if allowance is insufficient
 - Panics if `from` has insufficient balance
+- T001 if the recipient balance would overflow
 
 **Example:**
 ```bash
@@ -944,17 +1035,80 @@ Admin mints new tokens to an address, increasing total supply.
 | `admin` | `Address` | Must match the stored admin |
 | `to` | `Address` | Recipient of minted tokens |
 | `amount` | `i128` | Amount to mint (must be > 0) |
+| `nonce` | `u64` | Current admin nonce (see `admin_nonce`); consumed on success |
 
 **Returns:** nothing
 
 **Errors:**
 - Panics if caller is not the admin
+- Panics if `nonce` does not match the stored admin nonce
 - Panics if `amount` ≤ 0
+- T001 if the recipient balance or total supply would overflow
 
 **Example:**
 ```bash
 stellar contract invoke --id <TOKEN_ID> --source <ADMIN_KEY> --network testnet \
-  -- mint --admin <ADMIN_ADDRESS> --to <RECIPIENT_ADDRESS> --amount 1000000
+  -- mint --admin <ADMIN_ADDRESS> --to <RECIPIENT_ADDRESS> --amount 1000000 --nonce 0
+```
+
+---
+
+### `admin_nonce`
+
+Return the admin nonce that the next `mint` call must supply.
+
+**Caller:** Anyone
+
+**Returns:** `u64`
+
+**Example:**
+```bash
+stellar contract invoke --id <TOKEN_ID> --source <ANY_KEY> --network testnet \
+  -- admin_nonce
+```
+
+---
+
+### `propose_admin`
+
+Step 1 of two-step admin transfer: the current admin nominates a new admin.
+
+**Caller:** Admin
+
+| Parameter | Type | Description |
+|---|---|---|
+| `new_admin` | `Address` | Address nominated as the next admin |
+
+**Returns:** nothing
+
+**Example:**
+```bash
+stellar contract invoke --id <TOKEN_ID> --source <ADMIN_KEY> --network testnet \
+  -- propose_admin --new_admin <NEW_ADMIN_ADDRESS>
+```
+
+---
+
+### `accept_admin`
+
+Step 2 of two-step admin transfer: the nominated address accepts and becomes admin.
+
+**Caller:** `new_admin` (requires auth)
+
+| Parameter | Type | Description |
+|---|---|---|
+| `new_admin` | `Address` | Must match the pending admin |
+
+**Returns:** nothing
+
+**Errors:**
+- Panics if there is no pending admin
+- Panics if `new_admin` does not match the pending admin
+
+**Example:**
+```bash
+stellar contract invoke --id <TOKEN_ID> --source <NEW_ADMIN_KEY> --network testnet \
+  -- accept_admin --new_admin <NEW_ADMIN_ADDRESS>
 ```
 
 ---
@@ -1000,6 +1154,7 @@ Burn tokens on behalf of `from` using an existing allowance.
 
 **Errors:**
 - Panics if `amount` ≤ 0
+- Panics if the allowance has expired
 - Panics if allowance is insufficient
 - Panics if `from` has insufficient balance
 
@@ -1049,28 +1204,41 @@ Emitted by `update_rate` when the employer changes the stream's `rate_per_second
 
 ## Error Codes
 
-| Code | Constant | Meaning |
-|---|---|---|
-| E001 | `ERR_ZERO_RATE` | `rate_per_second` must be > 0 |
-| E002 | `ERR_ZERO_DEPOSIT` | `deposit` must be > 0 |
-| E003 | `ERR_REENTRANT` | Reentrant withdraw detected |
-| E004 | `ERR_OVERFLOW` | Arithmetic overflow in claimable calculation |
-| E005 | `ERR_STREAM_CANCELLED` | Cannot top up a cancelled stream |
-| E006 | `ERR_STREAM_EXHAUSTED` | Cannot top up an exhausted stream |
-| E007 | `ERR_BELOW_MIN_DEPOSIT` | Deposit below minimum |
-| E008 | `ERR_INVALID_RATE` | `rate_per_second` exceeds maximum (1,000,000,000) |
-| E009 | `ERR_BAD_NONCE` | Invalid admin nonce |
+Stream contract panics are prefixed with a stable code defined in `contracts/stream/src/types.rs`.
+Keep this table in sync with that file (see [CONTRIBUTING.md](../CONTRIBUTING.md#error-codes)).
+
+| Code | Constant | Meaning | Triggered By | Recommended Fix |
+|---|---|---|---|---|
+| E001 | `ERR_ZERO_RATE` | `rate_per_second` must be > 0 | `create_stream`, `create_streams_batch`, `update_rate` | Pass a `rate_per_second` / `new_rate` ≥ 1 |
+| E002 | `ERR_ZERO_DEPOSIT` | `deposit` / `amount` must be > 0 | `create_stream`, `create_streams_batch`, `set_min_deposit` | Pass a `deposit` / `amount` > 0 |
+| E003 | `ERR_REENTRANT` | Reentrant withdraw detected (stream `locked` flag set) | `withdraw`, `withdraw_all` | Do not re-enter `withdraw` from a token callback; retry in a separate transaction |
+| E004 | `ERR_OVERFLOW` | Arithmetic overflow in claimable / balance calculation | `claimable`, `claimable_at`, `withdraw`, `withdraw_all`, `top_up` | Use smaller `deposit`, `rate_per_second`, or top-up `amount` values |
+| E005 | `ERR_STREAM_CANCELLED` | Cannot top up a cancelled stream | `top_up` | Create a new stream instead |
+| E006 | `ERR_STREAM_EXHAUSTED` | Cannot top up an exhausted stream | `top_up` | Create a new stream instead |
+| E007 | `ERR_BELOW_MIN_DEPOSIT` | Deposit below minimum | `create_stream`, `create_streams_batch` | Deposit at least the minimum (default `10_000`, changed via `set_min_deposit`) |
+| E008 | `ERR_INVALID_RATE` | `rate_per_second` exceeds maximum (1,000,000,000) | `create_stream`, `create_streams_batch`, `update_rate` | Pass a rate ≤ 1,000,000,000 |
+| E009 | `ERR_BAD_NONCE` | Invalid admin nonce | `propose_admin`, `pause_contract`, `unpause_contract`, `set_min_deposit`, `upgrade`, `propose_upgrade`, `execute_upgrade`, `cancel_upgrade` | Read the current value with `admin_nonce` and pass it as `nonce` |
+| T001 | `ERR_OVERFLOW` (token) | Token arithmetic overflow | Token `mint`, `transfer`, `transfer_from` | Use smaller amounts |
 
 ---
 
 ## Stream Status Lifecycle
 
+`Cancelled` and `Exhausted` are terminal states: no function moves a stream out of them.
+
+```mermaid
+stateDiagram-v2
+    [*] --> Active: create_stream / create_streams_batch
+    Active --> Paused: pause_stream
+    Paused --> Active: resume_stream
+    Active --> Cancelled: cancel_stream / cancel_streams_batch
+    Paused --> Cancelled: cancel_stream / cancel_streams_batch
+    Active --> Exhausted: withdraw / withdraw_all / settle_stream
+    Cancelled --> [*]
+    Exhausted --> [*]
 ```
-Active → Paused → Active
-Active → Cancelled
-Active → Exhausted  (deposit fully streamed, or stop_time passed with no remaining tokens)
-Paused → Cancelled
-```
+
+`update_rate` and `top_up` do not change a stream's status.
 
 `settle_stream` (callable by anyone) triggers the Active → Exhausted transition for streams
 whose `stop_time` has passed and whose deposit is fully streamed. `withdraw` performs the

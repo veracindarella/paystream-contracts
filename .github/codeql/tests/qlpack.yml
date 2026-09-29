@@ -1,0 +1,7 @@
+name: paystream/soroban-queries-tests
+version: 0.0.1
+extractor: rust
+tests: .
+dependencies:
+  paystream/soroban-queries: "*"
+  codeql/rust-all: "*"

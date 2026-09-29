@@ -1,0 +1,8 @@
+name: PayStream CodeQL config
+
+queries:
+  - uses: ./.github/codeql/queries
+
+paths-ignore:
+  - '**/test_snapshots/**'
+  - '.github/codeql/tests/**'
