@@ -316,6 +316,59 @@ stellar contract invoke --id <STREAM_ID> --source <EMPLOYER_KEY> --network testn
 
 ---
 
+### `set_auto_topup`
+
+Employer pre-authorizes recurring top-ups. After each `withdraw` / `withdraw_all`, if `deposit - withdrawn < trigger_threshold`, the contract pulls `topup_amount` from the employer via `transfer_from` (capped so the cumulative total never exceeds `max_total`). The employer must first `approve` the stream contract as spender for at least `max_total`. If the allowance or balance is insufficient, the top-up is skipped and the withdraw still succeeds. Calling again replaces the config and resets the running total.
+
+**Caller:** Employer
+
+| Parameter | Type | Description |
+|---|---|---|
+| `employer` | `Address` | Must match the stream's employer |
+| `stream_id` | `u64` | ID of the stream |
+| `trigger_threshold` | `i128` | Remaining balance below which a top-up fires (> 0) |
+| `topup_amount` | `i128` | Amount per top-up (> 0, ≤ `max_total`) |
+| `max_total` | `i128` | Cap on cumulative auto top-ups |
+
+**Returns:** nothing
+
+**Errors:**
+- Panics if stream not found or caller is not the employer
+- E005 if stream is Cancelled
+- E025 if parameters are invalid
+
+**Example:**
+```bash
+stellar contract invoke --id <STREAM_ID> --source <EMPLOYER_KEY> --network testnet \
+  -- set_auto_topup --employer <EMPLOYER_ADDRESS> --stream_id 1 \
+  --trigger_threshold 100000 --topup_amount 500000 --max_total 5000000
+```
+
+---
+
+### `cancel_auto_topup`
+
+Employer revokes a stream's recurring top-up authorization.
+
+**Caller:** Employer
+
+| Parameter | Type | Description |
+|---|---|---|
+| `employer` | `Address` | Must match the stream's employer |
+| `stream_id` | `u64` | ID of the stream |
+
+**Errors:**
+- Panics if stream not found or caller is not the employer
+- E026 if no auto top-up is configured
+
+---
+
+### `get_auto_topup`
+
+Returns `Option<AutoTopupConfig>` (`trigger_threshold`, `topup_amount`, `max_total`, `total_topped_up`) for the stream.
+
+---
+
 ### `pause_stream`
 
 Employer pauses an active stream. Accrual stops until `resume_stream` is called.

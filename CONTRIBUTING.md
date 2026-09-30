@@ -16,6 +16,8 @@ Thank you for contributing to PayStream — a Soroban smart contract system for 
 - [Coding Standards](#coding-standards)
 - [Commit Conventions](#commit-conventions)
 - [Bounty Program & Finding Issues](#bounty-program--finding-issues)
+  - [Finding your first issue](#finding-your-first-issue)
+- [Questions & Discussions](#questions--discussions)
 - [Pull Request Process](#pull-request-process)
 - [Changelog](#changelog)
 - [Testing Requirements](#testing-requirements)
@@ -326,6 +328,22 @@ Looking for tasks to contribute to?
 
 - **Bounty Program**: PayStream hosts open bounties with defined criteria for merged PRs. See [docs/bounties.md](docs/bounties.md) for active bounty categories, rules, and claiming instructions.
 - **Good First Issues**: If you are new to the codebase, check out issues tagged with [`good-first-issue`](https://github.com/veracindarella/paystream-contracts/issues?q=is%3Aissue+is%3Aopen+label%3Agood-first-issue).
+- **Roadmap**: See [docs/roadmap.md](docs/roadmap.md) for upcoming milestones and the issues each one depends on.
+
+### Finding your first issue
+
+1. Browse issues labelled [`good-first-issue`](https://github.com/veracindarella/paystream-contracts/issues?q=is%3Aissue+is%3Aopen+label%3Agood-first-issue). These are self-contained, have clear acceptance criteria, and need no deep Soroban expertise.
+2. Comment on the issue to say you're picking it up, so work isn't duplicated.
+3. Stuck? Ping a maintainer in [GitHub Discussions](https://github.com/veracindarella/paystream-contracts/discussions) — every good first issue has a mentor available.
+4. Keep the PR small and reference the issue with `Closes #<number>`.
+
+---
+
+## Questions & Discussions
+
+- **Questions, ideas, and show-and-tell** → [GitHub Discussions](https://github.com/veracindarella/paystream-contracts/discussions) (categories: Q&A, Ideas, Show and Tell, Announcements). Start with the pinned "Welcome & FAQ" thread.
+- **Bugs and concrete feature requests** → [GitHub Issues](https://github.com/veracindarella/paystream-contracts/issues).
+- **Security vulnerabilities** → follow [SECURITY.md](SECURITY.md); never open a public issue.
 
 ---
 

@@ -117,6 +117,8 @@ pub enum DataKey {
 /// | E021 | ERR_ADMIN_NOT_SET       | Admin has not been initialised                     |
 /// | E022 | ERR_STOP_TIME_PAST      | `stop_time` must be in the future                  |
 /// | E023 | ERR_AMOUNT_NOT_POSITIVE | Amount must be positive                            |
+/// | E025 | ERR_INVALID_AUTO_TOPUP  | Invalid auto top-up parameters                     |
+/// | E026 | ERR_NO_AUTO_TOPUP       | No auto top-up configured for the stream           |
 pub const ERR_ZERO_RATE: &str = "E001: rate_per_second must be greater than zero";
 pub const ERR_ZERO_DEPOSIT: &str = "E002: deposit must be positive";
 pub const ERR_REENTRANT: &str = "E003: reentrant withdraw detected";

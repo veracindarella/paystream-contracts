@@ -291,6 +291,8 @@ We welcome contributions from the community.
 - **Developer Setup & Guidelines**: Review [CONTRIBUTING.md](CONTRIBUTING.md) for environment setup, coding standards, and PR workflows.
 - **Bounty Program**: PayStream maintains an active bounty track for open-source contributors across smart contracts, testing, security, and tooling. See [docs/bounties.md](docs/bounties.md) for open bounties, criteria, and entry-level tasks tagged with `good-first-issue`.
 - **First-Time Contributors**: Browse open beginner-friendly tasks in the [Good First Issues Tracker](https://github.com/veracindarella/paystream-contracts/issues?q=is%3Aissue+is%3Aopen+label%3Agood-first-issue).
+- **Questions & Community**: Ask questions, share ideas, and show what you've built in [GitHub Discussions](https://github.com/veracindarella/paystream-contracts/discussions).
+- **Roadmap**: See [docs/roadmap.md](docs/roadmap.md) for planned milestones through mainnet launch.
 
 ## Security
 
