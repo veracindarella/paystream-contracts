@@ -18,11 +18,12 @@ use soroban_sdk::{contract, contractimpl, token, Address, BytesN, Env, Map, Vec}
 pub const CONTRACT_VERSION: u32 = 1;
 use storage::{
     claimable_amount, clear_pending_admin, clear_pending_upgrade, consume_admin_nonce, get_admin,
-    get_admin_nonce, get_auto_topup, get_employee_streams, get_employer_streams, get_min_deposit,
-    get_pending_admin, get_pending_admin_nonce, get_pending_upgrade, get_streams_in_range,
+    get_admin_nonce, get_auto_topup, get_min_deposit, get_pending_admin, get_pending_admin_nonce,
+    get_pending_upgrade, get_streams_in_range, get_streams_in_time_range,
     index_employee_stream, index_employer_stream, index_stream_by_timestamp, load_stream, next_id,
     remove_auto_topup, save_stream, set_admin, set_auto_topup, set_min_deposit, set_pending_admin,
-    set_pending_admin_nonce, set_pending_upgrade, TIMELOCK_DELAY,
+    set_pending_admin_nonce, set_pending_upgrade, stream_ids_by_employee, stream_ids_by_employer,
+    TIMELOCK_DELAY,
 };
 use types::{
     DataKey, Stream, StreamParams, StreamStatus, ERR_ADMIN_NOT_SET, ERR_BAD_PENDING_NONCE,
@@ -527,19 +528,19 @@ impl StreamContract {
     /// - `employee` — employee address; must authenticate (requires auth, called once)
     ///
     /// # Returns
-    /// `Vec<(u64, i128)>` — list of `(stream_id, amount_withdrawn)` pairs for
-    /// every stream from which tokens were actually transferred. Empty if
-    /// nothing was claimable.
+    /// `Vec<i128>` — amounts transferred, in employee stream-index order,
+    /// with one entry for each stream from which tokens were transferred.
+    /// Empty if nothing was claimable.
     ///
     /// # Errors
     /// - Panics if contract is paused
     /// - E003 if a reentrant withdraw is detected on any stream
-    pub fn withdraw_all(env: Env, employee: Address) -> Vec<(u64, i128)> {
+    pub fn withdraw_all(env: Env, employee: Address) -> Vec<i128> {
         employee.require_auth();
         assert!(!get_paused(&env), "contract is paused");
 
-        let stream_ids = get_employee_streams(&env, &employee);
-        let mut results: Vec<(u64, i128)> = Vec::new(&env);
+        let stream_ids = stream_ids_by_employee(&env, &employee);
+        let mut results: Vec<i128> = Vec::new(&env);
         let now = env.ledger().timestamp();
 
         for stream_id in stream_ids.iter() {
@@ -591,7 +592,7 @@ impl StreamContract {
             save_stream(&env, &stream);
             events::withdrawn(&env, stream_id, &employee, amount);
 
-            results.push_back((stream_id, amount));
+            results.push_back(amount);
         }
 
         results
@@ -1194,14 +1195,17 @@ impl StreamContract {
     ///
     /// # Parameters
     /// - `admin` — must match the stored admin (requires auth)
+    /// - `nonce` — current admin nonce; consumed even if every stream is skipped
     /// - `stream_ids` — IDs of streams to evaluate; ineligible ones are skipped
     ///
     /// # Errors
     /// - Panics if `admin` auth fails or does not match the stored admin
-    pub fn expire_streams(env: Env, admin: Address, stream_ids: Vec<u64>) {
+    /// - E009 if `nonce` does not match the stored admin nonce
+    pub fn expire_streams(env: Env, admin: Address, nonce: u64, stream_ids: Vec<u64>) {
         admin.require_auth();
         let stored_admin = get_admin(&env);
         assert_eq!(admin, stored_admin, "{}", ERR_NOT_ADMIN);
+        consume_admin_nonce(&env, nonce);
 
         let now = env.ledger().timestamp();
 
@@ -1630,8 +1634,8 @@ impl StreamContract {
     ///
     /// # Returns
     /// `Vec<u64>` of stream IDs; empty if the address has no streams.
-    pub fn streams_by_employer(env: Env, employer: Address) -> Vec<u64> {
-        get_employer_streams(&env, &employer)
+    pub fn stream_ids_by_employer(env: Env, employer: Address) -> Vec<u64> {
+        stream_ids_by_employer(&env, &employer)
     }
 
     /// Return all stream IDs paying `employee`.
@@ -1641,8 +1645,20 @@ impl StreamContract {
     ///
     /// # Returns
     /// `Vec<u64>` of stream IDs; empty if the address receives no streams.
+    pub fn stream_ids_by_employee(env: Env, employee: Address) -> Vec<u64> {
+        stream_ids_by_employee(&env, &employee)
+    }
+
+    /// Deprecated alias for [`stream_ids_by_employer`].
+    #[deprecated(note = "use stream_ids_by_employer")]
+    pub fn streams_by_employer(env: Env, employer: Address) -> Vec<u64> {
+        Self::stream_ids_by_employer(env, employer)
+    }
+
+    /// Deprecated alias for [`stream_ids_by_employee`].
+    #[deprecated(note = "use stream_ids_by_employee")]
     pub fn streams_by_employee(env: Env, employee: Address) -> Vec<u64> {
-        get_employee_streams(&env, &employee)
+        Self::stream_ids_by_employee(env, employee)
     }
 
     /// Return a page of stream IDs paying `employee`.
@@ -1663,7 +1679,7 @@ impl StreamContract {
         offset: u32,
         limit: u32,
     ) -> Vec<u64> {
-        let stream_ids = get_employee_streams(&env, &employee);
+        let stream_ids = stream_ids_by_employee(&env, &employee);
         let mut page: Vec<u64> = Vec::new(&env);
         if offset >= stream_ids.len() {
             return page;
@@ -1683,21 +1699,28 @@ impl StreamContract {
         page
     }
 
-    /// Return all stream IDs created within the half-open timestamp range [`from_ts`, `to_ts`).
+    /// Return all stream IDs created within the time range [`from_ts`, `to_ts`],
+    /// capped at 30 days and sorted in ascending stream-ID order.
     ///
-    /// Streams are indexed by day-bucket (UTC day) at creation time.  This
-    /// function iterates the relevant buckets, making time-range queries
-    /// efficient for analytics and dashboards without scanning every stream.
+    /// Streams are indexed by day-bucket (UTC day) at creation time. This makes
+    /// efficient catch-up queries for dashboards and indexers without scanning
+    /// every stream in storage.
     ///
     /// # Parameters
     /// - `from_ts` — inclusive lower bound (Unix timestamp in seconds)
     /// - `to_ts`   — exclusive upper bound (Unix timestamp in seconds)
     ///
     /// # Returns
-    /// `Vec<u64>` of stream IDs in creation order; empty if no streams were
-    /// created in the given range.
+    /// `Vec<u64>` of unique stream IDs in ascending order; empty if no streams
+    /// were created in the effective range.
+    pub fn streams_in_time_range(env: Env, from_ts: u64, to_ts: u64) -> Vec<u64> {
+        get_streams_in_time_range(&env, from_ts, to_ts)
+    }
+
+    /// Deprecated alias for [`streams_in_time_range`].
+    #[deprecated(note = "use streams_in_time_range")]
     pub fn streams_in_range(env: Env, from_ts: u64, to_ts: u64) -> Vec<u64> {
-        get_streams_in_range(&env, from_ts, to_ts)
+        Self::streams_in_time_range(env, from_ts, to_ts)
     }
 
     /// Return whether the contract is currently paused.
@@ -1724,7 +1747,7 @@ impl StreamContract {
 
     /// Return the number of streams owned by `employer`.
     ///
-    /// Equivalent to `streams_by_employer(employer).len()` but avoids loading
+    /// Equivalent to `stream_ids_by_employer(employer).len()` but avoids loading
     /// the full ID vector — useful for pagination and dashboards.
     ///
     /// # Parameters
@@ -1733,12 +1756,12 @@ impl StreamContract {
     /// # Returns
     /// `u64` count; 0 if the address has no streams.
     pub fn stream_count_by_employer(env: Env, employer: Address) -> u64 {
-        get_employer_streams(&env, &employer).len() as u64
+        stream_ids_by_employer(&env, &employer).len() as u64
     }
 
     /// Return the number of streams paying `employee`.
     ///
-    /// Equivalent to `streams_by_employee(employee).len()` but avoids loading
+    /// Equivalent to `stream_ids_by_employee(employee).len()` but avoids loading
     /// the full ID vector — useful for pagination and dashboards.
     ///
     /// # Parameters
@@ -1747,7 +1770,7 @@ impl StreamContract {
     /// # Returns
     /// `u64` count; 0 if the address has no streams.
     pub fn stream_count_by_employee(env: Env, employee: Address) -> u64 {
-        get_employee_streams(&env, &employee).len() as u64
+        stream_ids_by_employee(&env, &employee).len() as u64
     }
 
     /// Return the number of streams funded with `token`.

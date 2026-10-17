@@ -1163,19 +1163,18 @@ fn test_propose_admin_bad_nonce_rejected() {
 }
 
 // ---------------------------------------------------------------------------
-// Issue #61 – TEST-12: Load test for streams_by_employer with 100+ streams
+// Issue #61 – TEST-12: Load test for stream_ids_by_employer with 100+ streams
 // ---------------------------------------------------------------------------
 
 /// Load test: create 100 streams for a single employer and verify that
-/// `streams_by_employer` returns all 100 IDs correctly.
+/// `stream_ids_by_employer` returns all 100 IDs correctly.
 ///
 /// This test exercises the `EmployerStreams` persistent `Vec<u64>` index at
 /// scale and documents whether any Soroban value-size limits are approached.
 ///
-/// Notes on SC-05 (`stream_count_by_employer`):
-/// That function is not yet implemented. Until it lands, the count is verified
-/// via `streams_by_employer(&employer).len()`. Switch to the dedicated function
-/// once SC-05 is merged.
+/// The stream count is also available directly through
+/// `stream_count_by_employer`; this test checks that the indexed list has the
+/// expected length before checking its contents.
 ///
 /// CPU / memory observations (run locally with `cargo test -- --nocapture`):
 /// Soroban's testutils do not expose raw CPU-instruction or memory counters
@@ -1185,7 +1184,7 @@ fn test_propose_admin_bad_nonce_rejected() {
 /// for the project's benchmarking approach. No Soroban value-size limits were
 /// triggered at 100 streams during manual testing.
 #[test]
-fn test_streams_by_employer_load_100() {
+fn test_stream_ids_by_employer_load_100() {
     const STREAM_COUNT: u64 = 100;
 
     let (env, client) = setup();
@@ -1222,22 +1221,22 @@ fn test_streams_by_employer_load_100() {
         "stream_count() must equal the number of streams created"
     );
 
-    // --- Verify streams_by_employer returns all 100 IDs ---
-    let employer_streams = client.streams_by_employer(&employer);
+    // --- Verify stream_ids_by_employer returns all 100 IDs ---
+    let employer_streams = client.stream_ids_by_employer(&employer);
 
     // Count check — proxy for stream_count_by_employer (SC-05).
     // TODO: replace with client.stream_count_by_employer(&employer) once SC-05 lands.
     assert_eq!(
         employer_streams.len() as u64,
         STREAM_COUNT,
-        "streams_by_employer must return exactly {STREAM_COUNT} IDs"
+        "stream_ids_by_employer must return exactly {STREAM_COUNT} IDs"
     );
 
     // Content check — every created ID must appear in the index.
     for id in expected_ids.iter() {
         assert!(
             employer_streams.contains(id),
-            "stream ID {id} missing from streams_by_employer result"
+            "stream ID {id} missing from stream_ids_by_employer result"
         );
     }
 
@@ -1451,18 +1450,9 @@ fn test_withdraw_all_three_streams() {
     // All three streams yielded tokens
     assert_eq!(results.len(), 3);
 
-    // Verify each (stream_id, amount) pair
-    let r0 = results.get(0).unwrap();
-    assert_eq!(r0.0, id1);
-    assert_eq!(r0.1, 1000); // 100s * 10/s
-
-    let r1 = results.get(1).unwrap();
-    assert_eq!(r1.0, id2);
-    assert_eq!(r1.1, 500); // 100s * 5/s
-
-    let r2 = results.get(2).unwrap();
-    assert_eq!(r2.0, id3);
-    assert_eq!(r2.1, 100); // 100s * 1/s
+    assert_eq!(results.get(0).unwrap(), 1000); // 100s * 10/s
+    assert_eq!(results.get(1).unwrap(), 500); // 100s * 5/s
+    assert_eq!(results.get(2).unwrap(), 100); // 100s * 1/s
 }
 
 /// Streams where claimable == 0 are silently skipped (no revert).
@@ -1508,10 +1498,8 @@ fn test_withdraw_all_skips_cancelled_and_paused() {
 
     // Only stream 3 is Active with claimable tokens
     assert_eq!(results.len(), 1);
-    let r0 = results.get(0).unwrap();
-    assert_eq!(r0.0, id3);
+    assert_eq!(results.get(0).unwrap(), 100);
     // 100 seconds total active for stream 3 (pause on id2 doesn't affect id3)
-    assert_eq!(r0.1, 100); // 100s * 1/s
 }
 
 /// withdraw_all returns empty vec when employee has no streams at all.
@@ -1548,9 +1536,7 @@ fn test_withdraw_all_partial_claimable() {
 
     // Only id1 has claimable tokens
     assert_eq!(results.len(), 1);
-    let r0 = results.get(0).unwrap();
-    assert_eq!(r0.0, id1);
-    assert_eq!(r0.1, 1000); // 100s * 10/s
+    assert_eq!(results.get(0).unwrap(), 1000); // 100s * 10/s
 }
 
 // ---------------------------------------------------------------------------
@@ -1618,7 +1604,7 @@ fn test_stream_count_by_employee_increments() {
     assert_eq!(client.stream_count_by_employee(&employee), 2);
 }
 
-/// stream_count_by_employer count equals streams_by_employer length.
+/// stream_count_by_employer count equals stream_ids_by_employer length.
 #[test]
 fn test_stream_count_by_employer_matches_list_length() {
     let (env, client) = setup();
@@ -1635,12 +1621,12 @@ fn test_stream_count_by_employer_matches_list_length() {
     client.create_stream(&employer, &employee3, &token_id, &10_000, &10, &0, &None);
 
     let count = client.stream_count_by_employer(&employer);
-    let list_len = client.streams_by_employer(&employer).len() as u64;
+    let list_len = client.stream_ids_by_employer(&employer).len() as u64;
     assert_eq!(count, list_len);
     assert_eq!(count, 3);
 }
 
-/// stream_count_by_employee count equals streams_by_employee length.
+/// stream_count_by_employee count equals stream_ids_by_employee length.
 #[test]
 fn test_stream_count_by_employee_matches_list_length() {
     let (env, client) = setup();
@@ -1654,7 +1640,7 @@ fn test_stream_count_by_employee_matches_list_length() {
     client.create_stream(&employer, &employee, &token_id, &10_000, &10, &0, &None);
 
     let count = client.stream_count_by_employee(&employee);
-    let list_len = client.streams_by_employee(&employee).len() as u64;
+    let list_len = client.stream_ids_by_employee(&employee).len() as u64;
     assert_eq!(count, list_len);
     assert_eq!(count, 2);
 }
@@ -2663,6 +2649,8 @@ fn test_expire_streams_eligible_stream_exhausted() {
     let token_id = setup_token(&env, &employer);
 
     client.initialize(&admin);
+    assert_eq!(client.admin_nonce(), 0);
+
     // stop_time = now + 100; rate=1/s so all 100 tokens stream by stop_time
     env.ledger().with_mut(|l| l.timestamp = 1_000_000);
     let stop_time: u64 = 1_000_100;
@@ -2678,7 +2666,8 @@ fn test_expire_streams_eligible_stream_exhausted() {
 
     let mut ids = soroban_sdk::Vec::new(&env);
     ids.push_back(id);
-    client.expire_streams(&admin, &ids);
+    client.expire_streams(&admin, &0, &ids);
+    assert_eq!(client.admin_nonce(), 1);
 
     let s = client.get_stream(&id);
     assert_eq!(s.status, StreamStatus::Exhausted);
@@ -2727,7 +2716,8 @@ fn test_expire_streams_ineligible_skipped() {
     ids.push_back(id_eligible);
 
     // Must not revert even though two streams are ineligible
-    client.expire_streams(&admin, &ids);
+    client.expire_streams(&admin, &0, &ids);
+    assert_eq!(client.admin_nonce(), 1);
 
     // Ineligible streams are unchanged
     let s_no_stop = client.get_stream(&id_no_stop);
@@ -2739,6 +2729,29 @@ fn test_expire_streams_ineligible_skipped() {
     // Eligible stream is expired
     let s_eligible = client.get_stream(&id_eligible);
     assert_eq!(s_eligible.status, StreamStatus::Exhausted);
+}
+
+#[test]
+#[should_panic(expected = "E012")]
+fn test_expire_streams_non_admin_rejected() {
+    let (env, client) = setup();
+    let admin = Address::generate(&env);
+    let non_admin = Address::generate(&env);
+    let employer = Address::generate(&env);
+    let employee = Address::generate(&env);
+    let token_id = setup_token(&env, &employer);
+
+    client.initialize(&admin);
+    env.ledger().with_mut(|l| l.timestamp = 1_000_000);
+
+    let stop_time: u64 = 1_000_100;
+    let id = client.create_stream(&employer, &employee, &token_id, &100, &1, &stop_time, &None);
+
+    env.ledger().with_mut(|l| l.timestamp = stop_time + 604_801);
+
+    let mut ids = soroban_sdk::Vec::new(&env);
+    ids.push_back(id);
+    client.expire_streams(&non_admin, &0, &ids);
 }
 
 /// expire_streams with still-claimable tokens skips that stream.
@@ -2762,7 +2775,8 @@ fn test_expire_streams_still_claimable_skipped() {
 
     let mut ids = soroban_sdk::Vec::new(&env);
     ids.push_back(id);
-    client.expire_streams(&admin, &ids);
+    client.expire_streams(&admin, &0, &ids);
+    assert_eq!(client.admin_nonce(), 1);
 
     // Stream still Active because claimable > 0
     let s = client.get_stream(&id);
@@ -2916,6 +2930,58 @@ fn test_streams_in_range_inverted_range_empty() {
     // Inverted range
     let ids = client.streams_in_range(&86_400_u64, &0_u64);
     assert_eq!(ids.len(), 0);
+}
+
+/// streams_in_time_range returns sorted IDs across day buckets.
+#[test]
+fn test_streams_in_time_range_multiple_days_sorted() {
+    let (env, client) = setup();
+    let admin = Address::generate(&env);
+    let employer = Address::generate(&env);
+    let employee = Address::generate(&env);
+    let token_id = setup_token(&env, &employer);
+
+    client.initialize(&admin);
+
+    env.ledger().with_mut(|l| l.timestamp = 2 * 86_400);
+    let id_day2 = client.create_stream(&employer, &employee, &token_id, &10_000, &1, &0, &None);
+
+    env.ledger().with_mut(|l| l.timestamp = 86_400);
+    let id_day1 = client.create_stream(&employer, &employee, &token_id, &10_000, &1, &0, &None);
+
+    env.ledger().with_mut(|l| l.timestamp = 0);
+    let id_day0 = client.create_stream(&employer, &employee, &token_id, &10_000, &1, &0, &None);
+
+    let ids = client.streams_in_time_range(&0_u64, &3 * 86_400_u64);
+    assert_eq!(ids.len(), 3);
+    assert_eq!(ids.get(0).unwrap(), id_day0);
+    assert_eq!(ids.get(1).unwrap(), id_day1);
+    assert_eq!(ids.get(2).unwrap(), id_day2);
+}
+
+/// streams_in_time_range caps the query at 30 days.
+#[test]
+fn test_streams_in_time_range_caps_at_30_days() {
+    let (env, client) = setup();
+    let admin = Address::generate(&env);
+    let employer = Address::generate(&env);
+    let employee = Address::generate(&env);
+    let token_id = setup_token(&env, &employer);
+
+    client.initialize(&admin);
+
+    let mut ids = soroban_sdk::Vec::new(&env);
+    for day in 0..=31 {
+        env.ledger().with_mut(|l| l.timestamp = day * 86_400);
+        let employee_for_day = Address::generate(&env);
+        let stream_id = client.create_stream(&employer, &employee_for_day, &token_id, &10_000, &1, &0, &None);
+        ids.push_back(stream_id);
+    }
+
+    let out = client.streams_in_time_range(&0_u64, &(32 * 86_400_u64));
+    assert_eq!(out.len(), 31);
+    assert_eq!(out.get(0).unwrap(), ids.get(0).unwrap());
+    assert_eq!(out.get(30).unwrap(), ids.get(30).unwrap());
 }
 
 // ---------------------------------------------------------------------------

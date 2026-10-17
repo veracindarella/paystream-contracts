@@ -56,6 +56,20 @@ stellar contract invoke --id "$STREAM_ID" --source "$ADMIN" --network "$NETWORK"
 
 Applies only to streams created afterwards; existing streams are unaffected.
 
+## 3. Expire stale streams
+
+Use admin batch expiry when streams have crossed `stop_time + GRACE_PERIOD` and the employee has already exhausted any remaining claimable balance. The admin nonce is consumed even if no streams are eligible.
+
+```bash
+# Re-read the nonce before the admin batch
+export NONCE=$(stellar contract invoke --id "$STREAM_ID" --source "$ADMIN" --network "$NETWORK" -- admin_nonce)
+
+stellar contract invoke --id "$STREAM_ID" --source "$ADMIN" --network "$NETWORK" \
+  -- expire_streams --admin "$ADMIN_ADDRESS" --nonce "$NONCE" --stream_ids '[1,2,3]'
+```
+
+Eligible streams are transitioned to `Exhausted`; ineligible IDs are silently skipped. This keeps off-chain indexes accurate without reverting the whole batch.
+
 ## 4. Admin transfer
 
 Two-step handover. The nonce passed to `propose_admin` must also be passed to `accept_admin`.

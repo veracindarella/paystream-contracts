@@ -20,7 +20,7 @@ One card per employer address. Totals are per token — never sum amounts across
 |---|---|---|---|---|
 | `employer` | `Address` | Connected wallet | — | — |
 | `total_streams` | `u64` | Number of streams created by the employer | `stream_count_by_employer(employer)` | Direct |
-| `stream_ids` | `Vec<u64>` | All stream IDs owned by the employer | `streams_by_employer(employer)` | Direct |
+| `stream_ids` | `Vec<u64>` | All stream IDs owned by the employer | `stream_ids_by_employer(employer)` | Direct |
 | `streams_by_status` | `map<StreamStatus, u64>` | Count of Active / Paused / Cancelled / Exhausted | `get_streams_batch(stream_ids)` → group by `status` | Derived |
 | `total_deposited[token]` | `i128` | Σ `deposit` over the employer's streams | `get_streams_batch` → Σ `deposit` | Derived |
 | `total_withdrawn[token]` | `i128` | Σ `withdrawn` over the employer's streams | `get_streams_batch` → Σ `withdrawn` | Derived |
@@ -58,7 +58,7 @@ One row per stream in the employer's stream table.
 | `created_at_ledger` | `u32` | Ledger of creation | `created` event | Indexed |
 | `last_activity` | `u64` | Most recent event of any kind | Latest event for `id` | Indexed |
 
-**Recommended read path:** `streams_by_employer` → `get_streams_batch` (chunks of 50) → `claimable` for Active streams only (the others are always 0 or fixed).
+**Recommended read path:** `stream_ids_by_employer` → `get_streams_batch` (chunks of 50) → `claimable` for Active streams only (the others are always 0 or fixed).
 
 ---
 
@@ -96,7 +96,7 @@ Contract storage keeps only the current state, so all history comes from events 
 
 | Data | Direct contract query | Off-chain aggregation required | Why |
 |---|---|---|---|
-| Stream list for an employer | ✅ `streams_by_employer` | | On-chain index exists |
+| Stream list for an employer | ✅ `stream_ids_by_employer` | | On-chain index exists |
 | Current state of each stream | ✅ `get_stream` / `get_streams_batch` | | Stored on-chain |
 | Current / future claimable | ✅ `claimable`, `claimable_at` | | Computed on-chain |
 | Overview totals (deposited, withdrawn, claimable, burn rate) | ✅ via reads + client sum | | Small N; sum client-side. Use an indexer when N is large (≫ 50 streams) |

@@ -165,6 +165,24 @@ const s = await read(employer.publicKey(), "get_stream", u64(streamId));
 //   start_time, stop_time, last_withdraw_time, status, locked }
 ```
 
+### List stream IDs
+
+Use the employer or employee index query to retrieve stream IDs. The returned IDs decode as `bigint[]`.
+
+```ts
+const employerStreamIds: bigint[] = await read(
+  employer.publicKey(),
+  "stream_ids_by_employer",
+  addr(employer.publicKey()),
+);
+
+const employeeStreamIds: bigint[] = await read(
+  employee.publicKey(),
+  "stream_ids_by_employee",
+  addr(employee.publicKey()),
+);
+```
+
 ## Error handling
 
 Contract panics surface as a failed simulation (`prepareTransaction` / `simulateTransaction` throws) whose message contains the contract error code, e.g. `E008` for a rate above the maximum. See the error table in [api-reference.md](api-reference.md). Common causes:

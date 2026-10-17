@@ -156,6 +156,32 @@ stellar contract invoke --id <STREAM_ID> --source <ADMIN_KEY> --network testnet 
 
 ---
 
+### `expire_streams`
+
+Admin batch-expires streams that crossed `stop_time + GRACE_PERIOD` and have no remaining claimable tokens. Ineligible entries are skipped without reverting. The admin nonce is consumed even when every stream is skipped.
+
+**Caller:** Admin
+
+| Parameter | Type | Description |
+|---|---|---|
+| `admin` | `Address` | Must equal the stored admin |
+| `nonce` | `u64` | Current admin nonce (replay protection) |
+| `stream_ids` | `Vec<u64>` | Streams to evaluate; each must be `Active`, have `stop_time > 0`, `now > stop_time + GRACE_PERIOD`, and `claimable == 0` to expire |
+
+**Returns:** nothing
+
+**Errors:**
+- Panics if `admin` auth fails or does not match the stored admin
+- Panics if `nonce` does not match the stored admin nonce (E009)
+
+**Example:**
+```bash
+stellar contract invoke --id <STREAM_ID> --source <ADMIN_KEY> --network testnet \
+  -- expire_streams --admin <ADMIN_ADDRESS> --nonce 3 --stream_ids '[1,2,3]'
+```
+
+---
+
 ### `create_stream`
 
 Employer creates a salary stream and deposits funds into the contract escrow.
@@ -298,7 +324,7 @@ Employee withdraws all claimable tokens from every stream they receive in a sing
 |---|---|---|
 | `employee` | `Address` | Employee address (requires auth, checked once) |
 
-**Returns:** `Vec<(u64, i128)>` — list of `(stream_id, amount_withdrawn)` pairs for every stream from which tokens were transferred; empty if nothing was claimable
+**Returns:** `Vec<i128>` — amounts transferred in employee stream-index order, with one entry per stream that paid out; empty if nothing was claimable
 
 **Errors:**
 - Panics if contract is paused
@@ -875,7 +901,7 @@ stellar contract invoke --id <STREAM_ID> --source <ANY_KEY> --network testnet \
 
 ---
 
-### `streams_by_employer`
+### `stream_ids_by_employer`
 
 Return all stream IDs owned by an employer.
 
@@ -887,15 +913,17 @@ Return all stream IDs owned by an employer.
 
 **Returns:** `Vec<u64>`
 
+**Migration:** Use this canonical name in new clients. `streams_by_employer` remains available as a deprecated compatibility alias.
+
 **Example:**
 ```bash
 stellar contract invoke --id <STREAM_ID> --source <ANY_KEY> --network testnet \
-  -- streams_by_employer --employer <EMPLOYER_ADDRESS>
+  -- stream_ids_by_employer --employer <EMPLOYER_ADDRESS>
 ```
 
 ---
 
-### `streams_by_employee`
+### `stream_ids_by_employee`
 
 Return all stream IDs paying an employee.
 
@@ -907,10 +935,12 @@ Return all stream IDs paying an employee.
 
 **Returns:** `Vec<u64>`
 
+**Migration:** Use this canonical name in new clients. `streams_by_employee` remains available as a deprecated compatibility alias.
+
 **Example:**
 ```bash
 stellar contract invoke --id <STREAM_ID> --source <ANY_KEY> --network testnet \
-  -- streams_by_employee --employee <EMPLOYEE_ADDRESS>
+  -- stream_ids_by_employee --employee <EMPLOYEE_ADDRESS>
 ```
 
 ---
@@ -938,9 +968,32 @@ stellar contract invoke --id <STREAM_ID> --source <ANY_KEY> --network testnet \
 
 ---
 
+### `streams_in_time_range`
+
+Return all stream IDs created within a time window, using the day-bucket timestamp index. Results are unique, deduplicated, and sorted ascending by `stream_id`. The effective range is capped at 30 days.
+
+**Caller:** Anyone
+
+| Parameter | Type | Description |
+|---|---|---|
+| `from_ts` | `u64` | Inclusive lower bound (Unix timestamp in seconds) |
+| `to_ts` | `u64` | Exclusive upper bound (Unix timestamp in seconds) |
+
+**Returns:** `Vec<u64>` — unique stream IDs in ascending order for the effective range
+
+**Example:**
+```bash
+stellar contract invoke --id <STREAM_ID> --source <ANY_KEY> --network testnet \
+  -- streams_in_time_range --from_ts 1714569600 --to_ts 1714656000
+```
+
+**Migration:** `streams_in_range` remains available as a deprecated alias for compatibility.
+
+---
+
 ### `stream_count_by_employer`
 
-Return the number of streams owned by an employer. Equivalent to `streams_by_employer(employer).len()` but avoids loading the full ID vector — useful for pagination and dashboards.
+Return the number of streams owned by an employer. Equivalent to `stream_ids_by_employer(employer).len()` but avoids loading the full ID vector — useful for pagination and dashboards.
 
 **Caller:** Anyone
 
@@ -960,7 +1013,7 @@ stellar contract invoke --id <STREAM_ID> --source <ANY_KEY> --network testnet \
 
 ### `stream_count_by_employee`
 
-Return the number of streams paying an employee. Equivalent to `streams_by_employee(employee).len()` but avoids loading the full ID vector — useful for pagination and dashboards.
+Return the number of streams paying an employee. Equivalent to `stream_ids_by_employee(employee).len()` but avoids loading the full ID vector — useful for pagination and dashboards.
 
 **Caller:** Anyone
 
@@ -1464,6 +1517,19 @@ Emitted by `withdraw` when the stream's remaining deposit (`deposit - withdrawn`
 
 ---
 
+### `stream_expired`
+
+Emitted by `expire_streams` when an eligible stream is transitioned from `Active` to `Exhausted`.
+
+| Field | Type | Description |
+|---|---|---|
+| `stream_id` | `u64` | ID of the expired stream (in topics) |
+
+**Topics:** `("expired", stream_id)`
+**Data:** empty tuple `()`
+
+---
+
 ### `threshold_updated`
 
 Emitted by `set_low_balance_threshold` when the employer updates the low-balance alert threshold for a stream.
@@ -1494,7 +1560,7 @@ Keep this table in sync with that file (see [CONTRIBUTING.md](../CONTRIBUTING.md
 | E006 | `ERR_STREAM_EXHAUSTED` | Cannot top up an exhausted stream | `top_up`, `set_low_balance_threshold` | Create a new stream instead |
 | E007 | `ERR_BELOW_MIN_DEPOSIT` | Deposit below minimum | `create_stream`, `create_streams_batch` | Deposit at least the minimum (default `10_000`, changed via `set_min_deposit`) |
 | E008 | `ERR_INVALID_RATE` | `rate_per_second` exceeds maximum (1,000,000,000) | `create_stream`, `create_streams_batch`, `update_rate` | Pass a rate ≤ 1,000,000,000 |
-| E009 | `ERR_BAD_NONCE` | Invalid admin nonce | `propose_admin`, `pause_contract`, `unpause_contract`, `set_min_deposit`, `upgrade`, `propose_upgrade`, `execute_upgrade`, `cancel_upgrade` | Read the current value with `admin_nonce` and pass it as `nonce` |
+| E009 | `ERR_BAD_NONCE` | Invalid admin nonce | `propose_admin`, `pause_contract`, `unpause_contract`, `set_min_deposit`, `expire_streams`, `upgrade`, `propose_upgrade`, `execute_upgrade`, `cancel_upgrade` | Read the current value with `admin_nonce` and pass it as `nonce` |
 | E029 | `ERR_BATCH_TOO_LARGE` | Batch contains more than 50 streams | `create_streams_batch`, `cancel_streams_batch` | Split the operation into batches of at most 50 streams |
 | T001 | `ERR_OVERFLOW` (token) | Token arithmetic overflow | Token `mint`, `transfer`, `transfer_from` | Use smaller amounts |
 

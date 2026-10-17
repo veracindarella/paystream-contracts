@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Canonical read-only stream index entrypoints `stream_ids_by_employer` and `stream_ids_by_employee`; the former `streams_by_*` entrypoints remain as deprecated aliases.
 - SC-06: `stream_status(stream_id) -> StreamStatus` — lightweight view that returns only
   the stream status without loading the full `Stream` struct into the caller's response.
   Reduces resource consumption for read-heavy off-chain indexers polling many streams.

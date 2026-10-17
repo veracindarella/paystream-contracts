@@ -174,7 +174,7 @@ pub fn index_employer_stream(env: &Env, employer: &Address, stream_id: u64) {
 /// Extends TTL on read (matching the `load_stream` pattern) so that the index
 /// does not expire for employers with long-running streams and no new stream
 /// creation activity (SC-15).
-pub fn get_employer_streams(env: &Env, employer: &Address) -> Vec<u64> {
+pub fn stream_ids_by_employer(env: &Env, employer: &Address) -> Vec<u64> {
     let key = DataKey::EmployerStreams(employer.clone());
     let ids: Vec<u64> = env
         .storage()
@@ -234,7 +234,7 @@ pub fn index_employee_stream(env: &Env, employee: &Address, stream_id: u64) {
 /// Extends TTL on read (matching the `load_stream` pattern) so that the index
 /// does not expire for employees with long-running streams and no new stream
 /// creation activity (SC-15).
-pub fn get_employee_streams(env: &Env, employee: &Address) -> Vec<u64> {
+pub fn stream_ids_by_employee(env: &Env, employee: &Address) -> Vec<u64> {
     let key = DataKey::EmployeeStreams(employee.clone());
     let ids: Vec<u64> = env
         .storage()
@@ -352,6 +352,15 @@ pub fn index_stream_by_timestamp(env: &Env, timestamp: u64, stream_id: u64) {
         .extend_ttl(&key, TTL_THRESHOLD, TTL_EXTEND_TO);
 }
 
+fn contains_id(ids: &Vec<u64>, needle: u64) -> bool {
+    for current in ids.iter() {
+        if current == needle {
+            return true;
+        }
+    }
+    false
+}
+
 /// Return all stream IDs created in the half-open range [`from_ts`, `to_ts`).
 ///
 /// Iterates every day-bucket that overlaps the range and accumulates the IDs.
@@ -365,21 +374,39 @@ pub fn index_stream_by_timestamp(env: &Env, timestamp: u64, stream_id: u64) {
 /// # Returns
 /// `Vec<u64>` of stream IDs; empty if no streams were created in the range.
 pub fn get_streams_in_range(env: &Env, from_ts: u64, to_ts: u64) -> Vec<u64> {
+    get_streams_in_time_range(env, from_ts, to_ts)
+}
+
+/// Return all stream IDs created in the time range [`from_ts`, `to_ts`], capped at
+/// 30 days and sorted ascending by stream ID.
+///
+/// The query is implemented against the day-bucket timestamp index and then
+/// normalised to remove duplicates and a stable ascending order for indexer
+/// catch-up workloads.
+pub fn get_streams_in_time_range(env: &Env, from_ts: u64, to_ts: u64) -> Vec<u64> {
     let mut result: Vec<u64> = Vec::new(env);
     if from_ts >= to_ts {
         return result;
     }
+
+    let max_window = 30_u64.saturating_mul(SECONDS_PER_DAY);
+    let effective_to_ts = if to_ts.saturating_sub(from_ts) > max_window {
+        from_ts.saturating_add(max_window)
+    } else {
+        to_ts
+    };
+
     let start_bucket = day_bucket(from_ts);
-    // to_ts is exclusive; the last bucket to check is the one that contains
-    // the timestamp just before to_ts.
-    let end_bucket = day_bucket(to_ts.saturating_sub(1));
+    let end_bucket = day_bucket(effective_to_ts.saturating_sub(1));
 
     let mut bucket = start_bucket;
     loop {
         let key = DataKey::StreamsByTimestamp(bucket);
         if let Some(ids) = env.storage().persistent().get::<DataKey, Vec<u64>>(&key) {
             for id in ids.iter() {
-                result.push_back(id);
+                if !contains_id(&result, id) {
+                    result.push_back(id);
+                }
             }
         }
         if bucket >= end_bucket {
@@ -387,5 +414,27 @@ pub fn get_streams_in_range(env: &Env, from_ts: u64, to_ts: u64) -> Vec<u64> {
         }
         bucket += 1;
     }
-    result
+
+    let mut sorted: Vec<u64> = Vec::new(env);
+    for id in result.iter() {
+        let mut insert_at = 0u32;
+        while insert_at < sorted.len() && sorted.get(insert_at).unwrap() < id {
+            insert_at += 1;
+        }
+
+        let mut updated: Vec<u64> = Vec::new(env);
+        let mut idx = 0u32;
+        while idx < insert_at {
+            updated.push_back(sorted.get(idx).unwrap());
+            idx += 1;
+        }
+        updated.push_back(id);
+        while idx < sorted.len() {
+            updated.push_back(sorted.get(idx).unwrap());
+            idx += 1;
+        }
+        sorted = updated;
+    }
+
+    sorted
 }
