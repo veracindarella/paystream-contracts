@@ -880,6 +880,177 @@ fn test_update_rate_withdraw_clears_pending_accrual() {
 }
 
 // ---------------------------------------------------------------------------
+// update_stop_time – change an active stream's hard stop
+// ---------------------------------------------------------------------------
+
+#[test]
+fn test_update_stop_time_extend_emits_event() {
+    use soroban_sdk::testutils::Events as _;
+    use soroban_sdk::{symbol_short, vec, IntoVal};
+
+    let (env, client) = setup();
+    let admin = Address::generate(&env);
+    let employer = Address::generate(&env);
+    let employee = Address::generate(&env);
+    let token_id = setup_token(&env, &employer);
+
+    client.initialize(&admin);
+    let now = env.ledger().timestamp();
+    let old_stop_time = now + 1_000;
+    let new_stop_time = now + 2_000;
+    let id = client.create_stream(
+        &employer,
+        &employee,
+        &token_id,
+        &10_000,
+        &10,
+        &old_stop_time,
+        &None,
+    );
+
+    client.update_stop_time(&employer, &id, &new_stop_time);
+    assert_eq!(client.get_stream(&id).stop_time, new_stop_time);
+
+    let events = env.events().all();
+    let update_event = events.iter().find(|(_, topics, data)| {
+        *topics
+            == vec![
+                &env,
+                symbol_short!("v1").into_val(&env),
+                symbol_short!("stop_upd").into_val(&env),
+                id.into_val(&env),
+            ]
+            && data.clone().into_val::<(u64, u64)>(&env) == (old_stop_time, new_stop_time)
+    });
+    assert!(update_event.is_some(), "stop_time_updated event not emitted");
+}
+
+#[test]
+fn test_update_stop_time_shorten() {
+    let (env, client) = setup();
+    let admin = Address::generate(&env);
+    let employer = Address::generate(&env);
+    let employee = Address::generate(&env);
+    let token_id = setup_token(&env, &employer);
+
+    client.initialize(&admin);
+    let now = env.ledger().timestamp();
+    let id = client.create_stream(
+        &employer,
+        &employee,
+        &token_id,
+        &10_000,
+        &10,
+        &(now + 2_000),
+        &None,
+    );
+
+    let last_withdraw_time = client.get_stream(&id).last_withdraw_time;
+    client.update_stop_time(&employer, &id, &last_withdraw_time);
+    assert_eq!(client.get_stream(&id).stop_time, last_withdraw_time);
+}
+
+#[test]
+fn test_update_stop_time_clear() {
+    let (env, client) = setup();
+    let admin = Address::generate(&env);
+    let employer = Address::generate(&env);
+    let employee = Address::generate(&env);
+    let token_id = setup_token(&env, &employer);
+
+    client.initialize(&admin);
+    let now = env.ledger().timestamp();
+    let id = client.create_stream(
+        &employer,
+        &employee,
+        &token_id,
+        &10_000,
+        &10,
+        &(now + 1_000),
+        &None,
+    );
+
+    client.update_stop_time(&employer, &id, &0);
+    assert_eq!(client.get_stream(&id).stop_time, 0);
+}
+
+#[test]
+#[should_panic(expected = "E030")]
+fn test_update_stop_time_before_last_withdrawal_rejected() {
+    let (env, client) = setup();
+    let admin = Address::generate(&env);
+    let employer = Address::generate(&env);
+    let employee = Address::generate(&env);
+    let token_id = setup_token(&env, &employer);
+
+    client.initialize(&admin);
+    let now = env.ledger().timestamp();
+    let id = client.create_stream(
+        &employer,
+        &employee,
+        &token_id,
+        &10_000,
+        &10,
+        &(now + 2_000),
+        &None,
+    );
+    env.ledger().with_mut(|ledger| ledger.timestamp = now + 100);
+    client.withdraw(&employee, &id);
+
+    client.update_stop_time(&employer, &id, &(now + 99));
+}
+
+#[test]
+#[should_panic(expected = "E018")]
+fn test_update_stop_time_non_employer_rejected() {
+    let (env, client) = setup();
+    let admin = Address::generate(&env);
+    let employer = Address::generate(&env);
+    let attacker = Address::generate(&env);
+    let employee = Address::generate(&env);
+    let token_id = setup_token(&env, &employer);
+
+    client.initialize(&admin);
+    let now = env.ledger().timestamp();
+    let id = client.create_stream(
+        &employer,
+        &employee,
+        &token_id,
+        &10_000,
+        &10,
+        &(now + 1_000),
+        &None,
+    );
+
+    client.update_stop_time(&attacker, &id, &(now + 2_000));
+}
+
+#[test]
+#[should_panic(expected = "E017")]
+fn test_update_stop_time_paused_stream_rejected() {
+    let (env, client) = setup();
+    let admin = Address::generate(&env);
+    let employer = Address::generate(&env);
+    let employee = Address::generate(&env);
+    let token_id = setup_token(&env, &employer);
+
+    client.initialize(&admin);
+    let now = env.ledger().timestamp();
+    let id = client.create_stream(
+        &employer,
+        &employee,
+        &token_id,
+        &10_000,
+        &10,
+        &(now + 1_000),
+        &None,
+    );
+    client.pause_stream(&employer, &id);
+
+    client.update_stop_time(&employer, &id, &(now + 2_000));
+}
+
+// ---------------------------------------------------------------------------
 // Issue #20 – Contract upgrade / migration path
 // ---------------------------------------------------------------------------
 

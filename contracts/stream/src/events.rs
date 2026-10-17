@@ -59,6 +59,14 @@ pub fn rate_updated(env: &Env, stream_id: u64, old_rate: i128, new_rate: i128) {
     );
 }
 
+/// Emitted when `update_stop_time` changes a stream's hard stop time.
+pub fn stop_time_updated(env: &Env, stream_id: u64, old_stop_time: u64, new_stop_time: u64) {
+    env.events().publish(
+        (symbol_short!("v1"), symbol_short!("stop_upd"), stream_id),
+        (old_stop_time, new_stop_time),
+    );
+}
+
 /// Emitted by `expire_streams` when an eligible stream is transitioned to Exhausted.
 pub fn stream_expired(env: &Env, stream_id: u64) {
     env.events()

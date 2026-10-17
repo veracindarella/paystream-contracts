@@ -27,7 +27,8 @@ use storage::{
 use types::{
     DataKey, Stream, StreamParams, StreamStatus, ERR_ADMIN_NOT_SET, ERR_BAD_PENDING_NONCE,
     ERR_BATCH_TOO_LARGE, ERR_CONTRACT_PAUSED, ERR_EMPTY_PARAMS, ERR_NEW_EMPLOYER_IS_EMPLOYEE, ERR_NOT_ADMIN,
-    ERR_NOT_EMPLOYEE, ERR_NOT_EMPLOYER, ERR_NOT_PENDING_ADMIN, ERR_NO_PENDING_ADMIN, ERR_OVERFLOW,
+    ERR_INVALID_STOP_TIME, ERR_NOT_EMPLOYEE, ERR_NOT_EMPLOYER, ERR_NOT_PENDING_ADMIN,
+    ERR_NO_PENDING_ADMIN, ERR_OVERFLOW,
     ERR_REENTRANT, ERR_STREAM_ALREADY_ENDED, ERR_STREAM_CANCELLED, ERR_STREAM_EXHAUSTED,
     ERR_STREAM_NOT_ACTIVE, ERR_STREAM_NOT_FOUND, ERR_STREAM_NOT_PAUSED, ERR_ZERO_DEPOSIT,
     MAX_BATCH_SIZE,
@@ -935,6 +936,40 @@ impl StreamContract {
         stream.rate_per_second = new_rate;
         save_stream(&env, &stream);
         events::rate_updated(&env, stream_id, old_rate, new_rate);
+    }
+
+    /// Employer updates the hard stop time of an Active stream.
+    ///
+    /// Set `new_stop_time` to 0 to make the stream indefinite. A nonzero stop
+    /// time cannot precede the stream's last withdrawal, which is the current
+    /// accrual baseline.
+    ///
+    /// # Parameters
+    /// - `employer` — must match the stream's employer (requires auth)
+    /// - `stream_id` — ID of the stream to update
+    /// - `new_stop_time` — Unix timestamp in seconds, or 0 for no hard stop
+    ///
+    /// # Errors
+    /// - E015 if the stream does not exist
+    /// - E017 if the stream is not Active
+    /// - E018 if the caller is not the stream's employer
+    /// - E030 if a nonzero `new_stop_time` precedes `last_withdraw_time`
+    pub fn update_stop_time(env: Env, employer: Address, stream_id: u64, new_stop_time: u64) {
+        employer.require_auth();
+
+        let mut stream = load_stream(&env, stream_id).expect(ERR_STREAM_NOT_FOUND);
+        assert_eq!(stream.employer, employer, "{}", ERR_NOT_EMPLOYER);
+        assert_eq!(stream.status, StreamStatus::Active, "{}", ERR_STREAM_NOT_ACTIVE);
+        assert!(
+            new_stop_time == 0 || new_stop_time >= stream.last_withdraw_time,
+            "{}",
+            ERR_INVALID_STOP_TIME
+        );
+
+        let old_stop_time = stream.stop_time;
+        stream.stop_time = new_stop_time;
+        save_stream(&env, &stream);
+        events::stop_time_updated(&env, stream_id, old_stop_time, new_stop_time);
     }
 
     /// Employer cancels a stream and reclaims unstreamed funds.    ///

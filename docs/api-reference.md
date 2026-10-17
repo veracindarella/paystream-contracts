@@ -593,6 +593,39 @@ stellar contract invoke --id <STREAM_ID> --source <EMPLOYER_KEY> --network testn
 
 ---
 
+### `update_stop_time`
+
+Employer changes the hard stop timestamp of an Active stream without cancelling
+and recreating it. Set `new_stop_time` to `0` to make the stream indefinite. A
+nonzero timestamp cannot precede `last_withdraw_time`, so this operation cannot
+move the hard stop behind the stream's current accrual baseline.
+
+**Caller:** Employer
+
+| Parameter | Type | Description |
+|---|---|---|
+| `employer` | `Address` | Must match the stream's employer |
+| `stream_id` | `u64` | ID of the stream to update |
+| `new_stop_time` | `u64` | Unix timestamp in seconds, or `0` for no hard stop |
+
+**Returns:** nothing
+
+**Errors:**
+- Panics if stream not found
+- E017 if the stream is not Active
+- E018 if caller is not the stream's employer
+- E030 if nonzero `new_stop_time` is before `last_withdraw_time`
+
+**Emitted event:** `stop_time_updated(stream_id, old_stop_time, new_stop_time)`
+
+**Example:**
+```bash
+stellar contract invoke --id <STREAM_ID> --source <EMPLOYER_KEY> --network testnet \
+  -- update_stop_time --employer <EMPLOYER_ADDRESS> --stream_id 1 --new_stop_time 1893456000
+```
+
+---
+
 ### `cancel_stream`
 
 Employer cancels a stream. The employee receives all earned tokens; the employer is refunded the remainder.
@@ -1448,6 +1481,21 @@ Emitted by `update_rate` when the employer changes the stream's `rate_per_second
 
 ---
 
+### `stop_time_updated`
+
+Emitted by `update_stop_time` when the employer changes a stream's hard stop time.
+
+| Field | Type | Description |
+|---|---|---|
+| `stream_id` | `u64` | ID of the updated stream (in topics) |
+| `old_stop_time` | `u64` | Previous hard stop timestamp (`0` means indefinite) |
+| `new_stop_time` | `u64` | New hard stop timestamp (`0` means indefinite) |
+
+**Topics:** `("v1", "stop_upd", stream_id)`
+**Data:** `(old_stop_time, new_stop_time)`
+
+---
+
 ### `low_balance`
 
 Emitted by `withdraw` when the stream's remaining deposit (`deposit - withdrawn`) falls below its non-zero `low_balance_threshold`. Off-chain systems can subscribe to this event to alert the employer to top up. The threshold is set via `create_stream` and can be changed via `top_up` or `set_low_balance_threshold`.
@@ -1496,6 +1544,7 @@ Keep this table in sync with that file (see [CONTRIBUTING.md](../CONTRIBUTING.md
 | E008 | `ERR_INVALID_RATE` | `rate_per_second` exceeds maximum (1,000,000,000) | `create_stream`, `create_streams_batch`, `update_rate` | Pass a rate ≤ 1,000,000,000 |
 | E009 | `ERR_BAD_NONCE` | Invalid admin nonce | `propose_admin`, `pause_contract`, `unpause_contract`, `set_min_deposit`, `upgrade`, `propose_upgrade`, `execute_upgrade`, `cancel_upgrade` | Read the current value with `admin_nonce` and pass it as `nonce` |
 | E029 | `ERR_BATCH_TOO_LARGE` | Batch contains more than 50 streams | `create_streams_batch`, `cancel_streams_batch` | Split the operation into batches of at most 50 streams |
+| E030 | `ERR_INVALID_STOP_TIME` | Nonzero stop time precedes last withdrawal | `update_stop_time` | Use 0 or a timestamp at/after `last_withdraw_time` |
 | T001 | `ERR_OVERFLOW` (token) | Token arithmetic overflow | Token `mint`, `transfer`, `transfer_from` | Use smaller amounts |
 
 ---

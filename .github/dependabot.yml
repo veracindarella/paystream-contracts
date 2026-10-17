@@ -11,5 +11,8 @@ updates:
     directory: "/"
     schedule:
       interval: weekly
+    labels:
+      - dependencies
+      - devops
     assignees:
       - veracindarella

@@ -1,6 +1,6 @@
 # PayStream Contracts
 
-[![CI](https://github.com/veracindarella/paystream-contracts/actions/workflows/ci.yml/badge.svg)](https://github.com/veracindarella/paystream-contracts/actions/workflows/ci.yml)
+[![CI](https://github.com/veracindarella/paystream-contracts/actions/workflows/ci.yml/badge.svg?branch=main&event=schedule)](https://github.com/veracindarella/paystream-contracts/actions/workflows/ci.yml)
 [![Coverage](https://codecov.io/gh/veracindarella/paystream-contracts/branch/main/graph/badge.svg)](https://codecov.io/gh/veracindarella/paystream-contracts)
 [![cargo-deny](https://github.com/veracindarella/paystream-contracts/actions/workflows/deny.yml/badge.svg)](https://github.com/veracindarella/paystream-contracts/actions/workflows/deny.yml)
 [![MSRV](https://img.shields.io/badge/MSRV-1.84.0-orange.svg)](Cargo.toml)
