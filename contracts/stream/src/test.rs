@@ -91,6 +91,184 @@ fn test_create_stream() {
 }
 
 #[test]
+fn test_linear_vest_mid_vest_claimable() {
+    let (env, client) = setup();
+    let admin = Address::generate(&env);
+    let employer = Address::generate(&env);
+    let employee = Address::generate(&env);
+    let token_id = setup_token(&env, &employer);
+
+    client.initialize(&admin);
+    let stream_id = client.create_linear_vest(
+        &employer,
+        &employee,
+        &token_id,
+        &100_000,
+        &100,
+        &None,
+    );
+
+    env.ledger().with_mut(|ledger| ledger.timestamp += 50);
+    assert_eq!(client.claimable(&stream_id), 50_000);
+    assert_eq!(client.get_stream_type(&stream_id), crate::types::StreamType::LinearVest);
+}
+
+#[test]
+fn test_linear_vest_fully_vested_claimable() {
+    let (env, client) = setup();
+    let admin = Address::generate(&env);
+    let employer = Address::generate(&env);
+    let employee = Address::generate(&env);
+    let token_id = setup_token(&env, &employer);
+
+    client.initialize(&admin);
+    let stream_id = client.create_linear_vest(
+        &employer,
+        &employee,
+        &token_id,
+        &100_000,
+        &100,
+        &None,
+    );
+
+    env.ledger().with_mut(|ledger| ledger.timestamp += 100);
+    assert_eq!(client.claimable(&stream_id), 100_000);
+}
+
+#[test]
+fn test_linear_vest_cliff_delays_claimability() {
+    let (env, client) = setup();
+    let admin = Address::generate(&env);
+    let employer = Address::generate(&env);
+    let employee = Address::generate(&env);
+    let token_id = setup_token(&env, &employer);
+
+    client.initialize(&admin);
+    let stream_id = client.create_linear_vest(
+        &employer,
+        &employee,
+        &token_id,
+        &100_000,
+        &100,
+        &Some(50),
+    );
+
+    env.ledger().with_mut(|ledger| ledger.timestamp += 49);
+    assert_eq!(client.claimable(&stream_id), 0);
+    env.ledger().with_mut(|ledger| ledger.timestamp += 1);
+    assert_eq!(client.claimable(&stream_id), 50_000);
+}
+
+#[test]
+fn test_cancel_linear_vest_refunds_unvested_grant() {
+    let (env, client) = setup();
+    let admin = Address::generate(&env);
+    let employer = Address::generate(&env);
+    let employee = Address::generate(&env);
+    let token_id = setup_token(&env, &employer);
+    let token = paystream_token::TokenContractClient::new(&env, &token_id);
+    let employer_balance_before = token.balance(&employer);
+
+    client.initialize(&admin);
+    let stream_id = client.create_linear_vest(
+        &employer,
+        &employee,
+        &token_id,
+        &10_000,
+        &100,
+        &None,
+    );
+
+    env.ledger().with_mut(|ledger| ledger.timestamp += 40);
+    client.cancel_stream(&employer, &stream_id);
+
+    assert_eq!(token.balance(&employee), 4_000);
+    assert_eq!(token.balance(&employer), employer_balance_before - 4_000);
+    assert_eq!(client.get_stream(&stream_id).withdrawn, 4_000);
+}
+
+#[test]
+fn test_protocol_fee_is_deducted_from_stream_deposit() {
+    let (env, client) = setup();
+    let admin = Address::generate(&env);
+    let employer = Address::generate(&env);
+    let employee = Address::generate(&env);
+    let treasury = Address::generate(&env);
+    let token_id = setup_token(&env, &employer);
+    let token = paystream_token::TokenContractClient::new(&env, &token_id);
+
+    client.initialize(&admin);
+    client.set_protocol_fee(&admin, &0, &10, &treasury);
+    let stream_id = client.create_stream(&employer, &employee, &token_id, &100_000, &10, &0, &None);
+
+    assert_eq!(client.get_stream(&stream_id).deposit, 99_900);
+    assert_eq!(token.balance(&treasury), 100);
+    assert_eq!(client.get_protocol_fee(), (10, Some(treasury)));
+}
+
+#[test]
+fn test_protocol_fee_defaults_to_zero() {
+    let (env, client) = setup();
+    let admin = Address::generate(&env);
+    let employer = Address::generate(&env);
+    let employee = Address::generate(&env);
+    let treasury = Address::generate(&env);
+    let token_id = setup_token(&env, &employer);
+    let token = paystream_token::TokenContractClient::new(&env, &token_id);
+
+    client.initialize(&admin);
+    let stream_id = client.create_stream(&employer, &employee, &token_id, &10_000, &10, &0, &None);
+
+    assert_eq!(client.get_stream(&stream_id).deposit, 10_000);
+    assert_eq!(token.balance(&treasury), 0);
+    assert_eq!(client.get_protocol_fee(), (0, None));
+}
+
+#[test]
+#[should_panic(expected = "protocol fee cannot exceed 100 basis points")]
+fn test_protocol_fee_above_one_percent_is_rejected() {
+    let (env, client) = setup();
+    let admin = Address::generate(&env);
+    let treasury = Address::generate(&env);
+
+    client.initialize(&admin);
+    client.set_protocol_fee(&admin, &0, &101, &treasury);
+}
+
+#[test]
+fn test_protocol_fee_applies_to_batch_stream_creation() {
+    let (env, client) = setup();
+    let admin = Address::generate(&env);
+    let employer = Address::generate(&env);
+    let treasury = Address::generate(&env);
+    let token_id = setup_token(&env, &employer);
+    let token = paystream_token::TokenContractClient::new(&env, &token_id);
+    let mut params = soroban_sdk::Vec::new(&env);
+    params.push_back(StreamParams {
+        employee: Address::generate(&env),
+        token: token_id.clone(),
+        deposit: 100_000,
+        rate_per_second: 10,
+        stop_time: 0,
+    });
+    params.push_back(StreamParams {
+        employee: Address::generate(&env),
+        token: token_id.clone(),
+        deposit: 100_000,
+        rate_per_second: 10,
+        stop_time: 0,
+    });
+
+    client.initialize(&admin);
+    client.set_protocol_fee(&admin, &0, &100, &treasury);
+    let ids = client.create_streams_batch(&employer, &params);
+
+    assert_eq!(client.get_stream(&ids.get(0).unwrap()).deposit, 99_000);
+    assert_eq!(client.get_stream(&ids.get(1).unwrap()).deposit, 99_000);
+    assert_eq!(token.balance(&treasury), 2_000);
+}
+
+#[test]
 fn test_claimable_increases_with_time() {
     let (env, client) = setup();
     let admin = Address::generate(&env);
@@ -1762,6 +1940,59 @@ fn test_stream_count_by_token_multiple_tokens_and_batch() {
 
     assert_eq!(client.stream_count_by_token(&token_a), 2);
     assert_eq!(client.stream_count_by_token(&token_b), 1);
+}
+
+#[test]
+fn test_stream_ids_by_token_multiple_tokens_and_pagination() {
+    let (env, client) = setup();
+    let admin = Address::generate(&env);
+    let employer = Address::generate(&env);
+    let employee = Address::generate(&env);
+    let token_a = setup_token(&env, &employer);
+    let token_b = setup_token(&env, &employer);
+
+    client.initialize(&admin);
+    client.create_stream(&employer, &employee, &token_a, &10_000, &10, &0, &None);
+    client.create_stream(&employer, &employee, &token_b, &10_000, &10, &0, &None);
+    client.create_stream(&employer, &employee, &token_a, &10_000, &10, &0, &None);
+
+    let first_page = client.stream_ids_by_token(&token_a, &0, &1);
+    assert_eq!(first_page.len(), 1);
+    assert_eq!(first_page.get(0).unwrap(), 1);
+
+    let second_page = client.stream_ids_by_token(&token_a, &1, &50);
+    assert_eq!(second_page.len(), 1);
+    assert_eq!(second_page.get(0).unwrap(), 3);
+
+    let other_token = client.stream_ids_by_token(&token_b, &0, &50);
+    assert_eq!(other_token.len(), 1);
+    assert_eq!(other_token.get(0).unwrap(), 2);
+}
+
+#[test]
+fn test_stream_ids_by_token_unknown_token_returns_empty() {
+    let (env, client) = setup();
+    let token = Address::generate(&env);
+
+    assert!(client.stream_ids_by_token(&token, &0, &50).is_empty());
+}
+
+#[test]
+fn test_stream_ids_by_token_caps_limit_at_50() {
+    let (env, client) = setup();
+    let admin = Address::generate(&env);
+    let employer = Address::generate(&env);
+    let employee = Address::generate(&env);
+    let token = setup_token(&env, &employer);
+
+    client.initialize(&admin);
+    for _ in 0..51 {
+        client.create_stream(&employer, &employee, &token, &10_000, &10, &0, &None);
+    }
+
+    let page = client.stream_ids_by_token(&token, &0, &100);
+    assert_eq!(page.len(), 50);
+    assert_eq!(page.get(49).unwrap(), 50);
 }
 
 // ---------------------------------------------------------------------------

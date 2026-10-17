@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: Apache-2.0
 
 use crate::types::{
-    AutoTopupConfig, DataKey, PendingUpgrade, Stream, StreamParams, StreamStatus, ERR_ADMIN_NOT_SET, ERR_BAD_NONCE,
-    ERR_OVERFLOW,
+    AutoTopupConfig, DataKey, LinearVestSchedule, PendingUpgrade, ProtocolFeeConfig, Stream,
+    StreamParams, StreamStatus, StreamType, ERR_ADMIN_NOT_SET, ERR_BAD_NONCE, ERR_OVERFLOW,
 };
 use soroban_sdk::{Address, BytesN, Env, Vec};
 
@@ -25,6 +25,7 @@ pub const GRACE_PERIOD: u64 = 604_800; // 7 days
 const TTL_THRESHOLD: u32 = 6_307_200; // ~1 year
 const TTL_EXTEND_TO: u32 = 12_614_400; // ~2 years
 
+/// Persist a stream and extend its storage lifetime.
 pub fn save_stream(env: &Env, stream: &Stream) {
     let key = DataKey::Stream(stream.id);
     env.storage().persistent().set(&key, stream);
@@ -33,6 +34,7 @@ pub fn save_stream(env: &Env, stream: &Stream) {
         .extend_ttl(&key, TTL_THRESHOLD, TTL_EXTEND_TO);
 }
 
+/// Load a stream by ID and extend its storage lifetime when present.
 pub fn load_stream(env: &Env, id: u64) -> Option<Stream> {
     let key = DataKey::Stream(id);
     let stream: Option<Stream> = env.storage().persistent().get(&key);
@@ -44,6 +46,7 @@ pub fn load_stream(env: &Env, id: u64) -> Option<Stream> {
     stream
 }
 
+/// Allocate and persist the next sequential stream ID.
 pub fn next_id(env: &Env) -> u64 {
     let count: u64 = env
         .storage()
@@ -57,11 +60,13 @@ pub fn next_id(env: &Env) -> u64 {
     next
 }
 
+/// Store the contract administrator address.
 pub fn set_admin(env: &Env, admin: &Address) {
     env.storage().instance().set(&DataKey::Admin, admin);
 }
 
 #[allow(dead_code)]
+/// Return the configured administrator, panicking if it is not initialized.
 pub fn get_admin(env: &Env) -> Address {
     env.storage()
         .instance()
@@ -69,28 +74,33 @@ pub fn get_admin(env: &Env) -> Address {
         .expect(ERR_ADMIN_NOT_SET)
 }
 
+/// Store the address nominated as the next administrator.
 pub fn set_pending_admin(env: &Env, pending: &Address) {
     env.storage()
         .instance()
         .set(&DataKey::PendingAdmin, pending);
 }
 
+/// Return the nominated administrator, if a transfer is pending.
 pub fn get_pending_admin(env: &Env) -> Option<Address> {
     env.storage().instance().get(&DataKey::PendingAdmin)
 }
 
+/// Store the nonce bound to the pending administrator proposal.
 pub fn set_pending_admin_nonce(env: &Env, nonce: u64) {
     env.storage()
         .instance()
         .set(&DataKey::PendingAdminNonce, &nonce);
 }
 
+/// Return the nonce bound to the pending administrator proposal.
 pub fn get_pending_admin_nonce(env: &Env) -> Option<u64> {
     env.storage()
         .instance()
         .get(&DataKey::PendingAdminNonce)
 }
 
+/// Clear the pending administrator and its associated nonce.
 pub fn clear_pending_admin(env: &Env) {
     env.storage().instance().remove(&DataKey::PendingAdmin);
     env.storage()
@@ -98,6 +108,7 @@ pub fn clear_pending_admin(env: &Env) {
         .remove(&DataKey::PendingAdminNonce);
 }
 
+/// Return the configured minimum deposit, or the default when unset.
 pub fn get_min_deposit(env: &Env) -> i128 {
     env.storage()
         .instance()
@@ -105,8 +116,76 @@ pub fn get_min_deposit(env: &Env) -> i128 {
         .unwrap_or(DEFAULT_MIN_DEPOSIT)
 }
 
+/// Store the minimum gross deposit required to create a stream.
 pub fn set_min_deposit(env: &Env, amount: i128) {
     env.storage().instance().set(&DataKey::MinDeposit, &amount);
+}
+
+/// Return the configured fee and treasury, or `(0, None)` when unset.
+pub fn get_protocol_fee(env: &Env) -> (u16, Option<Address>) {
+    match env
+        .storage()
+        .instance()
+        .get::<DataKey, ProtocolFeeConfig>(&DataKey::ProtocolFee)
+    {
+        Some(config) => (config.fee_bps, Some(config.treasury)),
+        None => (0, None),
+    }
+}
+
+/// Store the configured protocol fee and treasury address.
+pub fn set_protocol_fee(env: &Env, fee_bps: u16, treasury: &Address) {
+    env.storage().instance().set(
+        &DataKey::ProtocolFee,
+        &ProtocolFeeConfig {
+            fee_bps,
+            treasury: treasury.clone(),
+        },
+    );
+}
+
+/// Return a stream's type, defaulting to `Payroll` for legacy streams.
+pub fn get_stream_type(env: &Env, stream_id: u64) -> StreamType {
+    let key = DataKey::StreamType(stream_id);
+    let stream_type: StreamType = env
+        .storage()
+        .persistent()
+        .get(&key)
+        .unwrap_or(StreamType::Payroll);
+    if stream_type == StreamType::LinearVest {
+        env.storage()
+            .persistent()
+            .extend_ttl(&key, TTL_THRESHOLD, TTL_EXTEND_TO);
+    }
+    stream_type
+}
+
+/// Return the linear vest schedule for a stream, if one is stored.
+pub fn get_linear_vest_schedule(env: &Env, stream_id: u64) -> Option<LinearVestSchedule> {
+    let key = DataKey::LinearVestSchedule(stream_id);
+    let schedule: Option<LinearVestSchedule> = env.storage().persistent().get(&key);
+    if schedule.is_some() {
+        env.storage()
+            .persistent()
+            .extend_ttl(&key, TTL_THRESHOLD, TTL_EXTEND_TO);
+    }
+    schedule
+}
+
+/// Store a linear vest schedule and mark its stream as `LinearVest`.
+pub fn set_linear_vest_schedule(env: &Env, stream_id: u64, schedule: &LinearVestSchedule) {
+    let type_key = DataKey::StreamType(stream_id);
+    let schedule_key = DataKey::LinearVestSchedule(stream_id);
+    env.storage()
+        .persistent()
+        .set(&type_key, &StreamType::LinearVest);
+    env.storage().persistent().set(&schedule_key, schedule);
+    env.storage()
+        .persistent()
+        .extend_ttl(&type_key, TTL_THRESHOLD, TTL_EXTEND_TO);
+    env.storage()
+        .persistent()
+        .extend_ttl(&schedule_key, TTL_THRESHOLD, TTL_EXTEND_TO);
 }
 
 /// Tokens earned by employee up to `now` that have not yet been withdrawn.
@@ -151,6 +230,48 @@ pub fn claimable_amount(stream: &Stream, now: u64) -> i128 {
         .max(0);
 
     total_earned.min(remaining).max(0)
+}
+
+/// Return the vested amount available to withdraw under a linear schedule.
+pub fn linear_vest_claimable_amount(
+    stream: &Stream,
+    schedule: &LinearVestSchedule,
+    now: u64,
+) -> i128 {
+    if stream.status == StreamStatus::Cancelled || stream.status == StreamStatus::Exhausted {
+        return 0;
+    }
+
+    let vest_period = schedule.vest_period as i128;
+    assert!(vest_period > 0, "vest period must be greater than zero");
+    let current_time = if stream.status == StreamStatus::Paused {
+        stream.last_withdraw_time
+    } else {
+        now
+    };
+    let elapsed = current_time.saturating_sub(stream.start_time);
+    if schedule.cliff.is_some_and(|cliff| elapsed < cliff) {
+        return 0;
+    }
+
+    let elapsed = elapsed.min(schedule.vest_period);
+    let elapsed_i128 = elapsed as i128;
+    let whole = (schedule.total_grant / vest_period)
+        .checked_mul(elapsed_i128)
+        .expect(ERR_OVERFLOW);
+    let remainder = (schedule.total_grant % vest_period) as u128;
+    let fraction = (remainder * elapsed as u128 / schedule.vest_period as u128) as i128;
+    let vested = whole.checked_add(fraction).expect(ERR_OVERFLOW);
+    let unwithdrawn_grant = vested
+        .checked_sub(stream.withdrawn)
+        .unwrap_or(0)
+        .max(0);
+    let remaining = stream
+        .deposit
+        .checked_sub(stream.withdrawn)
+        .unwrap_or(0)
+        .max(0);
+    unwithdrawn_grant.min(remaining)
 }
 
 /// Append `stream_id` to the employer's stream index.
@@ -249,6 +370,38 @@ pub fn get_employee_streams(env: &Env, employee: &Address) -> Vec<u64> {
     ids
 }
 
+/// Append `stream_id` to the token's stream index.
+pub fn index_token_stream(env: &Env, token: &Address, stream_id: u64) {
+    let key = DataKey::TokenStreams(token.clone());
+    let mut ids: Vec<u64> = env
+        .storage()
+        .persistent()
+        .get(&key)
+        .unwrap_or_else(|| Vec::new(env));
+    ids.push_back(stream_id);
+    env.storage().persistent().set(&key, &ids);
+    env.storage()
+        .persistent()
+        .extend_ttl(&key, TTL_THRESHOLD, TTL_EXTEND_TO);
+}
+
+/// Return all stream IDs funded with `token`.
+pub fn get_token_streams(env: &Env, token: &Address) -> Vec<u64> {
+    let key = DataKey::TokenStreams(token.clone());
+    let ids: Vec<u64> = env
+        .storage()
+        .persistent()
+        .get(&key)
+        .unwrap_or_else(|| Vec::new(env));
+    if env.storage().persistent().has(&key) {
+        env.storage()
+            .persistent()
+            .extend_ttl(&key, TTL_THRESHOLD, TTL_EXTEND_TO);
+    }
+    ids
+}
+
+/// Return a stream's auto top-up configuration, extending its storage lifetime.
 pub fn get_auto_topup(env: &Env, stream_id: u64) -> Option<AutoTopupConfig> {
     let key = DataKey::AutoTopup(stream_id);
     let config: Option<AutoTopupConfig> = env.storage().persistent().get(&key);
@@ -260,6 +413,7 @@ pub fn get_auto_topup(env: &Env, stream_id: u64) -> Option<AutoTopupConfig> {
     config
 }
 
+/// Store an auto top-up configuration and extend its storage lifetime.
 pub fn set_auto_topup(env: &Env, stream_id: u64, config: &AutoTopupConfig) {
     let key = DataKey::AutoTopup(stream_id);
     env.storage().persistent().set(&key, config);
@@ -268,6 +422,7 @@ pub fn set_auto_topup(env: &Env, stream_id: u64, config: &AutoTopupConfig) {
         .extend_ttl(&key, TTL_THRESHOLD, TTL_EXTEND_TO);
 }
 
+/// Remove a stream's auto top-up configuration.
 pub fn remove_auto_topup(env: &Env, stream_id: u64) {
     let key = DataKey::AutoTopup(stream_id);
     env.storage().persistent().remove(&key);

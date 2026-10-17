@@ -271,7 +271,9 @@ When adding a new error, assign the next available code, add the constant to `ty
 
 ### Documentation
 
-- Public functions must have a doc comment (`///`) explaining parameters, return value, and any panic conditions
+- Every public Rust item must have a doc comment (`///`): modules, types, enum variants, fields, constants, and functions.
+- Public functions must document their parameters, return values, and panic/error conditions. Keep API docs in `docs/api-reference.md` in sync with contract entry points.
+- The stream contract enforces this standard with `#![deny(missing_docs)]`; CI runs a rustdoc check and fails when public items lack documentation.
 - Non-obvious logic must have inline comments — especially around reentrancy, overflow handling, and status transitions
 
 ---

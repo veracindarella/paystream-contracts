@@ -156,6 +156,45 @@ stellar contract invoke --id <STREAM_ID> --source <ADMIN_KEY> --network testnet 
 
 ---
 
+### `set_protocol_fee`
+
+Admin configures the fee charged on stream creation. The fee is deducted from the gross deposit before the net amount is locked in escrow. `fee_bps` is capped at 100 (1%); setting it to 0 disables fees.
+
+**Caller:** Admin
+
+| Parameter | Type | Description |
+|---|---|---|
+| `admin` | `Address` | Must equal the stored admin |
+| `nonce` | `u64` | Current admin nonce (replay protection) |
+| `fee_bps` | `u16` | Fee in basis points, from 0 to 100 |
+| `treasury` | `Address` | Address receiving collected fees |
+
+**Errors:** Panics if the caller is not the admin, the nonce is wrong, or `fee_bps` exceeds 100.
+
+**Example:**
+```bash
+stellar contract invoke --id <STREAM_ID> --source <ADMIN_KEY> --network testnet \
+  -- set_protocol_fee --admin <ADMIN_ADDRESS> --nonce 2 --fee_bps 10 --treasury <TREASURY_ADDRESS>
+```
+
+---
+
+### `get_protocol_fee`
+
+Return the configured protocol fee and treasury. Before configuration, returns `(0, None)`.
+
+**Caller:** Anyone
+
+**Returns:** `(u16, Option<Address>)` — fee in basis points and optional treasury address
+
+**Example:**
+```bash
+stellar contract invoke --id <STREAM_ID> --source <ANY_KEY> --network testnet \
+  -- get_protocol_fee
+```
+
+---
+
 ### `create_stream`
 
 Employer creates a salary stream and deposits funds into the contract escrow.
@@ -167,7 +206,7 @@ Employer creates a salary stream and deposits funds into the contract escrow.
 | `employer` | `Address` | Employer address; funds are pulled from here |
 | `employee` | `Address` | Employee address; receives streamed tokens |
 | `token_address` | `Address` | SEP-41 token contract address |
-| `deposit` | `i128` | Total tokens to lock in escrow |
+| `deposit` | `i128` | Gross amount; configured fee is deducted before the net amount is locked in escrow |
 | `rate_per_second` | `i128` | Tokens streamed per second |
 | `stop_time` | `u64` | Hard stop timestamp (0 = indefinite) |
 | `low_balance_threshold` | `Option<i128>` | Emit a `low_bal` event after any withdraw that leaves less than this remaining (`None`/0 = disabled) |
@@ -199,6 +238,61 @@ stellar contract invoke --id <STREAM_ID> --source <EMPLOYER_KEY> --network testn
 
 ---
 
+### `create_linear_vest`
+
+Employer creates a fixed grant that vests linearly over `vest_period`. The grant is the gross deposit; any configured protocol fee is deducted before the net grant is escrowed. An optional cliff delays all claimability until the cliff duration has elapsed, while vesting accrues from the start time. Paused time is excluded from the vesting period.
+
+**Caller:** Employer
+
+| Parameter | Type | Description |
+|---|---|---|
+| `employer` | `Address` | Employer funding the grant |
+| `employee` | `Address` | Grant recipient |
+| `token_address` | `Address` | SEP-41 token contract address |
+| `total_grant` | `i128` | Gross grant amount (must meet minimum deposit) |
+| `vest_period` | `u64` | Vesting duration in seconds; must be greater than zero |
+| `cliff` | `Option<u64>` | Optional cliff duration in seconds; must not exceed `vest_period` |
+
+**Returns:** `u64` — the new stream ID
+
+**Example:**
+```bash
+stellar contract invoke --id <STREAM_ID> --source <EMPLOYER_KEY> --network testnet \
+  -- create_linear_vest --employer <EMPLOYER_ADDRESS> \
+  --employee <EMPLOYEE_ADDRESS> --token_address <TOKEN_ID> \
+  --total_grant 1000000 --vest_period 31536000 --cliff 7776000
+```
+
+---
+
+### `get_stream_type`
+
+Return whether a stream is `Payroll` or `LinearVest`. Existing streams without type metadata are treated as `Payroll`.
+
+**Caller:** Anyone
+
+| Parameter | Type | Description |
+|---|---|---|
+| `stream_id` | `u64` | Stream to query |
+
+**Returns:** `StreamType` — `Payroll` or `LinearVest`
+
+---
+
+### `get_linear_vest_schedule`
+
+Return the grant amount, vest duration, and optional cliff for a linear vest. Returns `None` for payroll streams.
+
+**Caller:** Anyone
+
+| Parameter | Type | Description |
+|---|---|---|
+| `stream_id` | `u64` | Stream to query |
+
+**Returns:** `Option<LinearVestSchedule>` — schedule containing `total_grant`, `vest_period`, and `cliff`
+
+---
+
 ### `create_streams_batch`
 
 Employer creates multiple salary streams atomically. All streams succeed or all revert.
@@ -216,7 +310,7 @@ Employer creates multiple salary streams atomically. All streams succeed or all 
 |---|---|---|
 | `employee` | `Address` | Employee address |
 | `token` | `Address` | SEP-41 token contract address |
-| `deposit` | `i128` | Deposit for this stream |
+| `deposit` | `i128` | Gross deposit; any configured protocol fee is deducted before escrow |
 | `rate_per_second` | `i128` | Tokens per second for this stream |
 | `stop_time` | `u64` | Hard stop timestamp (0 = indefinite) |
 
@@ -224,7 +318,7 @@ Employer creates multiple salary streams atomically. All streams succeed or all 
 
 **Limit:** 50 streams per call
 
-**Errors:** Same per-stream validations as `create_stream`; panics if `params` is empty or contains more than 50 entries (E029)
+**Errors:** Same per-stream validations as `create_stream`, including protocol fee deduction; panics if `params` is empty or contains more than 50 entries (E029)
 
 **Example:**
 ```bash
@@ -998,6 +1092,28 @@ stellar contract invoke --id <STREAM_ID> --source <ANY_KEY> --network testnet \
 
 ---
 
+### `stream_ids_by_token`
+
+Return a page of stream IDs funded with a token, in creation order. The requested limit is capped at 50; an offset at or beyond the token's stream count returns an empty vector.
+
+**Caller:** Anyone
+
+| Parameter | Type | Description |
+|---|---|---|
+| `token` | `Address` | Token contract address to query |
+| `offset` | `u64` | Number of stream IDs to skip |
+| `limit` | `u64` | Maximum number of IDs to return (capped at 50) |
+
+**Returns:** `Vec<u64>` — stream ID page
+
+**Example:**
+```bash
+stellar contract invoke --id <STREAM_ID> --source <ANY_KEY> --network testnet \
+  -- stream_ids_by_token --token <TOKEN_ADDRESS> --offset 0 --limit 20
+```
+
+---
+
 ### `admin_nonce`
 
 Return the current admin nonce. Use this to build the next admin transaction.
@@ -1494,7 +1610,7 @@ Keep this table in sync with that file (see [CONTRIBUTING.md](../CONTRIBUTING.md
 | E006 | `ERR_STREAM_EXHAUSTED` | Cannot top up an exhausted stream | `top_up`, `set_low_balance_threshold` | Create a new stream instead |
 | E007 | `ERR_BELOW_MIN_DEPOSIT` | Deposit below minimum | `create_stream`, `create_streams_batch` | Deposit at least the minimum (default `10_000`, changed via `set_min_deposit`) |
 | E008 | `ERR_INVALID_RATE` | `rate_per_second` exceeds maximum (1,000,000,000) | `create_stream`, `create_streams_batch`, `update_rate` | Pass a rate ≤ 1,000,000,000 |
-| E009 | `ERR_BAD_NONCE` | Invalid admin nonce | `propose_admin`, `pause_contract`, `unpause_contract`, `set_min_deposit`, `upgrade`, `propose_upgrade`, `execute_upgrade`, `cancel_upgrade` | Read the current value with `admin_nonce` and pass it as `nonce` |
+| E009 | `ERR_BAD_NONCE` | Invalid admin nonce | `propose_admin`, `pause_contract`, `unpause_contract`, `set_min_deposit`, `set_protocol_fee`, `upgrade`, `propose_upgrade`, `execute_upgrade`, `cancel_upgrade` | Read the current value with `admin_nonce` and pass it as `nonce` |
 | E029 | `ERR_BATCH_TOO_LARGE` | Batch contains more than 50 streams | `create_streams_batch`, `cancel_streams_batch` | Split the operation into batches of at most 50 streams |
 | T001 | `ERR_OVERFLOW` (token) | Token arithmetic overflow | Token `mint`, `transfer`, `transfer_from` | Use smaller amounts |
 
