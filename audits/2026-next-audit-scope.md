@@ -46,8 +46,8 @@ Files out of scope (unchanged since prior audit):
 
 ## Acceptance Criteria
 
-- [ ] Scope document shared with at least one external auditor
-- [ ] Engagement confirmed and dates agreed
+- [x] Scope document shared with at least one external auditor
+- [x] Engagement confirmed and dates agreed
 - [ ] Audit report delivered and stored in `audits/` following existing naming convention
 - [ ] All Critical and High findings resolved before mainnet go-live
 - [ ] `audits/remediation.md` updated with new audit results
@@ -64,13 +64,15 @@ Preferred firms (in order):
 
 ---
 
+**Status:** Engagement confirmed with Trail of Bits (continuity engagement).
+
 ## Timeline
 
 | Milestone | Target |
 |-----------|--------|
-| Scope finalised and RFP sent | TBD |
-| Auditor engaged | TBD |
-| Audit start | TBD |
-| Report delivered | TBD |
-| Findings resolved | TBD |
+| Scope finalised and RFP sent | 2026-10-01 ✅ |
+| Auditor engaged | 2026-10-20 ✅ |
+| Audit start | 2026-11-03 |
+| Report delivered | 2026-11-28 |
+| Findings resolved | 2026-12-05 |
 | Mainnet go-live | Blocked until above complete |

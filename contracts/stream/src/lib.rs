@@ -947,6 +947,12 @@ impl StreamContract {
     /// Increases `deposit` by `amount`. The stream's rate and timeline are
     /// unchanged; the extra funds simply extend how long the stream can run.
     ///
+    /// The employer must approve the stream contract as a spender for at least
+    /// `amount` tokens before calling this function.  An explicit allowance
+    /// pre-check (SEC-23) is performed before the `transfer_from` call so that
+    /// insufficient allowance produces a clear error message and no state is
+    /// mutated.
+    ///
     /// # Parameters
     /// - `employer` — must match the stream's employer (requires auth)
     /// - `stream_id` — ID of the stream to top up
@@ -958,6 +964,7 @@ impl StreamContract {
     /// - E005 if stream is Cancelled
     /// - E006 if stream is Exhausted
     /// - Panics if `amount` ≤ 0
+    /// - Panics with "insufficient allowance" if the employer has not approved enough
     /// - Panics if the token transfer fails
     pub fn top_up(
         env: Env,
@@ -982,8 +989,17 @@ impl StreamContract {
             ERR_STREAM_EXHAUSTED
         );
 
+        let this = env.current_contract_address();
         let token_client = token::Client::new(&env, &stream.token);
-        token_client.transfer(&employer, &env.current_contract_address(), &amount);
+        // SEC-23: pre-check allowance so the contract can emit a clear error
+        // before any state is mutated, rather than letting the token contract
+        // fail deep inside a cross-contract call.
+        let allowed = token_client.allowance(&employer, &this);
+        assert!(
+            allowed >= amount,
+            "insufficient allowance: employer must approve the stream contract for at least the top-up amount"
+        );
+        token_client.transfer_from(&this, &employer, &this, &amount);
 
         stream.deposit = stream.deposit.checked_add(amount).expect(ERR_OVERFLOW);
         if let Some(threshold) = low_balance_threshold {

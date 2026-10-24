@@ -890,6 +890,72 @@ fn test_top_up_zero_amount_rejected() {
 }
 
 // ---------------------------------------------------------------------------
+// SEC-23 – Allowance pre-check in top_up
+// ---------------------------------------------------------------------------
+
+/// top_up must panic with "insufficient allowance" when the employer has not
+/// approved the stream contract for the requested amount.
+///
+/// The check must fire before any stream state is mutated, so the stream
+/// deposit is unchanged after the panicking call.
+#[test]
+#[should_panic(expected = "insufficient allowance")]
+fn test_top_up_insufficient_allowance_rejected() {
+    use paystream_token::TokenContractClient;
+
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let stream_id_val = env.register(StreamContract, ());
+    let client = StreamContractClient::new(&env, &stream_id_val);
+
+    let admin = Address::generate(&env);
+    let employer = Address::generate(&env);
+    let employee = Address::generate(&env);
+    let token_id = setup_token(&env, &employer);
+    let token = TokenContractClient::new(&env, &token_id);
+
+    client.initialize(&admin);
+    let id = client.create_stream(&employer, &employee, &token_id, &10_000, &1, &0, &None);
+
+    // Deliberately grant zero allowance to the stream contract — top_up must
+    // detect this before calling transfer_from and panic with a clear message.
+    token.approve(&employer, &stream_id_val, &0, &9999);
+
+    client.top_up(&employer, &id, &500, &None);
+}
+
+/// top_up succeeds when the employer has approved exactly the top-up amount.
+#[test]
+fn test_top_up_exact_allowance_succeeds() {
+    use paystream_token::TokenContractClient;
+
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let stream_id_val = env.register(StreamContract, ());
+    let client = StreamContractClient::new(&env, &stream_id_val);
+
+    let admin = Address::generate(&env);
+    let employer = Address::generate(&env);
+    let employee = Address::generate(&env);
+    let token_id = setup_token(&env, &employer);
+    let token = TokenContractClient::new(&env, &token_id);
+
+    client.initialize(&admin);
+    let id = client.create_stream(&employer, &employee, &token_id, &5_000, &1, &0, &None);
+
+    let top_up_amount: i128 = 1_000;
+    // Approve exactly the top-up amount.
+    token.approve(&employer, &stream_id_val, &top_up_amount, &9999);
+
+    client.top_up(&employer, &id, &top_up_amount, &None);
+
+    let stream = client.get_stream(&id);
+    assert_eq!(stream.deposit, 5_000 + top_up_amount, "deposit must increase by top-up amount");
+}
+
+// ---------------------------------------------------------------------------
 // Issue #27 – update_rate: change stream rate without cancel/recreate
 // ---------------------------------------------------------------------------
 
@@ -1758,6 +1824,7 @@ fn test_is_paused_reflects_pause_unpause() {
 #[should_panic(expected = "E004")]
 fn test_top_up_deposit_overflow_uses_err_overflow() {
     use crate::storage::save_stream;
+    use paystream_token::TokenContractClient;
 
     let (env, client) = setup();
     let admin = Address::generate(&env);
@@ -1774,6 +1841,10 @@ fn test_top_up_deposit_overflow_uses_err_overflow() {
         stream.deposit = i128::MAX;
         save_stream(&env, &stream);
     });
+
+    // Grant allowance so the pre-check passes; the overflow fires after.
+    let token = TokenContractClient::new(&env, &token_id);
+    token.approve(&employer, &client.address, &1_i128, &9999);
 
     // top_up with 1 should panic with E004, not a generic "deposit overflow" message.
     client.top_up(&employer, &id, &1, &None);
@@ -3752,6 +3823,8 @@ mod events {
     ///           data = (employer, amount)
     #[test]
     fn test_event_topped_up() {
+        use paystream_token::TokenContractClient;
+
         let (env, client) = setup();
         let admin = Address::generate(&env);
         let employer = Address::generate(&env);

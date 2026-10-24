@@ -14,7 +14,7 @@
 | MED-01  | Medium   | Integer overflow in `claimable_amount`                       | ✅ Resolved |
 | MED-02  | Medium   | Dual transfer in `cancel_stream` without reentrancy note     | ✅ Resolved |
 | LOW-01  | Low      | `stop_time` does not auto-transition to `Exhausted`          | ✅ Accepted |
-| LOW-02  | Low      | `initialize` can be called multiple times                    | 🔲 Open   |
+| LOW-02  | Low      | `initialize` can be called multiple times                    | ✅ Resolved |
 | INFO-01 | Info     | `topped_up` event presence confirmed                         | ✅ N/A    |
 
 ---
@@ -55,11 +55,10 @@ remaining value, not `status`. Documented in README.
 
 ---
 
-## Open Finding
-
 ### LOW-02 — `initialize` can be called multiple times
 
-**Required fix:**
+**Fix:** Added re-initialization guard in `lib.rs::initialize`:
+
 ```rust
 pub fn initialize(env: Env, admin: Address) {
     assert!(
@@ -68,11 +67,14 @@ pub fn initialize(env: Env, admin: Address) {
     );
     admin.require_auth();
     set_admin(&env, &admin);
+    events::contract_initialized(&env, &admin);
 }
 ```
 
-**Blocking:** Yes — this must be resolved before mainnet deployment.  
-**Tracking:** Open hardening task in the project backlog.
+**Verified:** Guard present in `contracts/stream/src/lib.rs`.
+Tests `test_initialize_cannot_be_called_twice` (panics with "already initialized" on a second
+call) and `test_initialize_emits_event` both pass.  
+**Tracking:** Resolved — SEC-21 / issue #259.
 
 ---
 
@@ -81,14 +83,16 @@ pub fn initialize(env: Env, admin: Address) {
 | Environment | Ready |
 |-------------|-------|
 | Testnet     | ✅ Yes |
-| Mainnet     | ❌ Pending LOW-02 resolution + delta audit (SEC-07) |
+| Mainnet     | ❌ Pending delta audit (SEC-22) |
 
 ---
 
-## Planned: Delta Audit (SEC-07)
+## Planned: Delta Audit (SEC-22)
 
 A follow-up audit covering all changes since the 2026-04-23 Trail of Bits engagement is
 required before mainnet deployment. See [2026-next-audit-scope.md](2026-next-audit-scope.md)
 for the full scope, acceptance criteria, and auditor candidates.
+
+**Status:** Engagement confirmed — see [2026-next-audit-scope.md](2026-next-audit-scope.md).
 
 When the audit completes, add a new section here following the format above.
