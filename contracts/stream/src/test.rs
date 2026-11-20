@@ -5006,6 +5006,215 @@ fn test_cliff_cancel_before_cliff_refunds_employer_in_full() {
     assert_eq!(client.get_stream(&id).status, StreamStatus::Cancelled);
 }
 
+// ---------------------------------------------------------------------------
+// SC-64 – set_low_balance_threshold_batch
+// ---------------------------------------------------------------------------
+
+/// Happy path: batch-set thresholds on multiple streams, one event per change.
+#[test]
+fn test_set_low_balance_threshold_batch_happy_path() {
+    use soroban_sdk::{symbol_short, vec, IntoVal};
+
+    let (env, client) = setup();
+    let admin = Address::generate(&env);
+    let employer = Address::generate(&env);
+    let employee1 = Address::generate(&env);
+    let employee2 = Address::generate(&env);
+    let token_id = setup_token(&env, &employer);
+
+    client.initialize(&admin);
+    let id1 = client.create_stream(&employer, &employee1, &token_id, &10_000, &10, &0, &None, &None);
+    let id2 = client.create_stream(&employer, &employee2, &token_id, &10_000, &10, &0, &None, &None);
+
+    let mut updates = soroban_sdk::Vec::new(&env);
+    updates.push_back((id1, 1_000u128));
+    updates.push_back((id2, 2_500u128));
+    client.set_low_balance_threshold_batch(&employer, &updates);
+
+    assert_eq!(client.get_low_balance_threshold(&id1), Some(1_000));
+    assert_eq!(client.get_low_balance_threshold(&id2), Some(2_500));
+
+    let events = crate::test::all_events(&env);
+    for (id, threshold) in [(id1, 1_000u128), (id2, 2_500u128)] {
+        let topics = vec![
+            &env,
+            symbol_short!("v1").into_val(&env),
+            symbol_short!("thresh_up").into_val(&env),
+            id.into_val(&env),
+        ];
+        let found = events.iter().any(|(_, t, data)| {
+            *t == topics
+                && <u128 as soroban_sdk::FromVal<Env, soroban_sdk::Val>>::from_val(&env, &data)
+                    == threshold
+        });
+        assert!(found, "thresh_up event not emitted for stream");
+    }
+}
+
+/// Empty update list must be rejected.
+#[test]
+#[should_panic(expected = "updates must not be empty")]
+fn test_set_low_balance_threshold_batch_empty_list_rejected() {
+    let (env, client) = setup();
+    let admin = Address::generate(&env);
+    let employer = Address::generate(&env);
+    client.initialize(&admin);
+
+    let updates: soroban_sdk::Vec<(u64, u128)> = soroban_sdk::Vec::new(&env);
+    client.set_low_balance_threshold_batch(&employer, &updates);
+}
+
+/// Batch size exceeding 50 entries must be rejected with ERR_BATCH_TOO_LARGE.
+#[test]
+#[should_panic(expected = "E029")]
+fn test_set_low_balance_threshold_batch_over_max_panics() {
+    let (env, client) = setup();
+    let admin = Address::generate(&env);
+    let employer = Address::generate(&env);
+    let employee = Address::generate(&env);
+    let token_id = setup_token(&env, &employer);
+
+    client.initialize(&admin);
+    let id = client.create_stream(&employer, &employee, &token_id, &10_000, &10, &0, &None, &None);
+
+    let mut updates = soroban_sdk::Vec::new(&env);
+    for _ in 0..51 {
+        updates.push_back((id, 100u128));
+    }
+    client.set_low_balance_threshold_batch(&employer, &updates);
+}
+
+/// A stream not belonging to the caller must be rejected with ERR_NOT_EMPLOYER.
+#[test]
+#[should_panic(expected = "E018")]
+fn test_set_low_balance_threshold_batch_wrong_employer_rejected() {
+    let (env, client) = setup();
+    let admin = Address::generate(&env);
+    let employer1 = Address::generate(&env);
+    let employer2 = Address::generate(&env);
+    let employee = Address::generate(&env);
+    let token_id = setup_token(&env, &employer1);
+
+    client.initialize(&admin);
+    let id = client.create_stream(&employer1, &employee, &token_id, &10_000, &10, &0, &None, &None);
+
+    let mut updates = soroban_sdk::Vec::new(&env);
+    updates.push_back((id, 100u128));
+    client.set_low_balance_threshold_batch(&employer2, &updates);
+}
+
+/// A terminal (cancelled) stream must be rejected and nothing must change.
+#[test]
+fn test_set_low_balance_threshold_batch_terminal_stream_rejected() {
+    let (env, client) = setup();
+    let admin = Address::generate(&env);
+    let employer = Address::generate(&env);
+    let employee1 = Address::generate(&env);
+    let employee2 = Address::generate(&env);
+    let token_id = setup_token(&env, &employer);
+
+    client.initialize(&admin);
+    let id1 = client.create_stream(&employer, &employee1, &token_id, &10_000, &10, &0, &None, &None);
+    let id2 = client.create_stream(&employer, &employee2, &token_id, &10_000, &10, &0, &None, &None);
+    client.cancel_stream(&employer, &id2, &None);
+
+    let mut updates = soroban_sdk::Vec::new(&env);
+    updates.push_back((id1, 1_000u128));
+    updates.push_back((id2, 2_000u128));
+    assert!(client
+        .try_set_low_balance_threshold_batch(&employer, &updates)
+        .is_err());
+
+    // Atomic rollback: neither threshold was applied.
+    assert_eq!(client.get_low_balance_threshold(&id1), None);
+    assert_eq!(client.get_low_balance_threshold(&id2), None);
+}
+
+/// Partial failure: the second stream is terminal, so the first stream's
+/// threshold must remain unchanged (all-or-nothing).
+#[test]
+fn test_set_low_balance_threshold_batch_partial_failure_rolls_back() {
+    let (env, client) = setup();
+    let admin = Address::generate(&env);
+    let employer = Address::generate(&env);
+    let employee1 = Address::generate(&env);
+    let employee2 = Address::generate(&env);
+    let token_id = setup_token(&env, &employer);
+
+    client.initialize(&admin);
+    client.set_min_deposit(&admin, &0, &100);
+    let id1 = client.create_stream(&employer, &employee1, &token_id, &10_000, &10, &0, &None, &None);
+    let id2 = client.create_stream(&employer, &employee2, &token_id, &500, &10, &0, &None, &None);
+
+    // Exhaust id2 so it is terminal.
+    env.ledger().with_mut(|l| l.timestamp += 100);
+    client.withdraw(&employee2, &id2);
+    assert_eq!(client.get_stream(&id2).status, StreamStatus::Exhausted);
+
+    let mut updates = soroban_sdk::Vec::new(&env);
+    updates.push_back((id1, 1_000u128));
+    updates.push_back((id2, 2_000u128));
+    assert!(client
+        .try_set_low_balance_threshold_batch(&employer, &updates)
+        .is_err());
+
+    assert_eq!(client.get_low_balance_threshold(&id1), None);
+    assert_eq!(client.get_low_balance_threshold(&id2), None);
+}
+
+// ---------------------------------------------------------------------------
+// SC-103 – linear vest cliff_reached parity
+// ---------------------------------------------------------------------------
+
+/// LinearVest with a cliff: no event and no accrual before the cliff, the
+/// event fires exactly once at the cliff, and accrual starts from the cliff.
+#[test]
+fn test_linear_vest_cliff_reached_boundary() {
+    use soroban_sdk::{symbol_short, vec, IntoVal};
+
+    let (env, client) = setup();
+    let admin = Address::generate(&env);
+    let employer = Address::generate(&env);
+    let employee = Address::generate(&env);
+    let token_id = setup_token(&env, &employer);
+
+    client.initialize(&admin);
+    env.ledger().with_mut(|l| l.timestamp = 1_000);
+    // 100_000 total over 100 s, cliff at t=1_050.
+    let id = client.create_linear_vest(&employer, &employee, &token_id, &100_000, &100, &Some(1_050));
+
+    let cliff_topics = vec![
+        &env,
+        symbol_short!("v1").into_val(&env),
+        symbol_short!("cliff").into_val(&env),
+        id.into_val(&env),
+    ];
+    let count = |env: &Env| {
+        crate::test::all_events(env)
+            .iter()
+            .filter(|(_, topics, _)| *topics == cliff_topics)
+            .count()
+    };
+
+    // Just before the cliff: no event, nothing claimable.
+    env.ledger().with_mut(|l| l.timestamp = 1_049);
+    assert_eq!(client.claimable(&id), 0);
+    client.withdraw(&employee, &id);
+    assert_eq!(count(&env), 0, "no cliff event before the cliff");
+
+    // Exactly at the cliff: event emitted once, accrual starts from the cliff.
+    env.ledger().with_mut(|l| l.timestamp = 1_050);
+    assert_eq!(client.claimable(&id), 0);
+    client.withdraw(&employee, &id);
+    assert_eq!(count(&env), 1, "cliff_reached emitted at the cliff");
+
+    // After the cliff: accrual grows from the cliff, event not re-emitted.
+    env.ledger().with_mut(|l| l.timestamp = 1_060);
+    assert_eq!(client.claimable(&id), 10_000);
+    client.withdraw(&employee, &id);
+    assert_eq!(count(&env), 0, "cliff_reached is not emitted again");
+}
+
 #[test]
 fn test_cliff_reached_event_emitted_once() {
     use soroban_sdk::{symbol_short, vec, IntoVal};

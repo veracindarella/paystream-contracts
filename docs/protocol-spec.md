@@ -91,6 +91,21 @@ No accrual happens between `pause` and `resume`.
 
 `expire(S)` requires `auth(admin)`, `S.stop > 0`, `t > S.stop + G` where `G` is the grace period (7 days), `status = Active`, and `claimable(S, t) = 0`. Effect: `status ← Exhausted`.
 
+### 4.9 Batch low-balance threshold
+
+`setLowBalanceThresholdBatch(employer, entries)` requires `auth(employer)` and `1 ≤ |entries| ≤ 50`, where each entry is a pair `(id, threshold)`. For every entry, the stream `S = streams[id]` must exist, have `S.employer = employer`, and be non-terminal (`S.status ∈ {Active, Paused}`). If any entry fails validation, the whole operation is rejected (`⊥`) and no threshold changes.
+
+Effect: for each entry, `S.lowBalanceThreshold ← threshold`. One event is emitted per changed stream. The operation is all-or-nothing: either every entry is applied or none is.
+
+### 4.10 Linear vest with cliff
+
+A linear vest schedule may define a cliff time `cliff` with `S.start ≤ cliff ≤ S.stop`. For such a stream:
+
+- No accrual occurs before `cliff`; `earned(S, t) = 0` for `t < cliff`.
+- Accrual starts from the cliff: for `t ≥ cliff`, `earned(S, t) = r · max(0, end(t) − max(S.last, cliff)) + S.banked`, i.e. the vesting clock effectively begins at `cliff`.
+- `cliff_reached` is emitted exactly once, when the stream first crosses `cliff` (the first operation at or after `cliff`). This matches payroll streams with a cliff, which emit the same event under the same condition.
+=======
+
 ## 5. State machine
 
 ```

@@ -1047,6 +1047,55 @@ impl StreamContract {
         events::threshold_updated(&env, stream_id, old_threshold, threshold);
     }
 
+    /// Update the low-balance alert threshold for multiple streams atomically.
+    ///
+    /// All updates succeed or the whole call reverts. Each stream must belong
+    /// to `employer` and be non-terminal (Active or Paused). A threshold of 0
+    /// disables the alert for that stream.
+    ///
+    /// # Parameters
+    /// - `employer` — must own every stream in `updates` (requires auth once)
+    /// - `updates` — 1–50 `(stream_id, threshold)` pairs
+    ///
+    /// # Errors
+    /// - Panics if `updates` is empty
+    /// - Panics with E029 if `updates` contains more than 50 entries
+    /// - Panics if any threshold is negative
+    /// - E015 if any stream is not found
+    /// - E018 if any stream does not belong to `employer`
+    /// - E020 if any stream is Cancelled or Exhausted
+    pub fn set_low_balance_threshold_batch(
+        env: Env,
+        employer: Address,
+        updates: Vec<(u64, i128)>,
+    ) {
+        employer.require_auth();
+        assert!(!updates.is_empty(), "updates must not be empty");
+        assert!(updates.len() <= MAX_BATCH_SIZE, "{}", ERR_BATCH_TOO_LARGE);
+
+        // Validate every entry before mutating any state so the batch is
+        // all-or-nothing.
+        let mut validated: Vec<(Stream, i128)> = Vec::new(&env);
+        for (stream_id, threshold) in updates.iter() {
+            assert!(threshold >= 0, "threshold must be non-negative");
+            let stream = load_stream(&env, stream_id).expect(ERR_STREAM_NOT_FOUND);
+            assert_eq!(stream.employer, employer, "{}", ERR_NOT_EMPLOYER);
+            assert!(
+                stream.status == StreamStatus::Active || stream.status == StreamStatus::Paused,
+                "{}",
+                ERR_STREAM_ALREADY_ENDED
+            );
+            validated.push_back((stream, threshold));
+        }
+
+        for (mut stream, threshold) in validated.iter() {
+            let old_threshold = stream.low_balance_threshold;
+            stream.low_balance_threshold = threshold;
+            save_stream(&env, &stream);
+            events::threshold_updated(&env, stream.id, old_threshold, threshold);
+        }
+    }
+
     /// Employer pre-authorizes recurring top-ups for a stream.
     ///
     /// After each withdraw, if `deposit - withdrawn < trigger_threshold`, the

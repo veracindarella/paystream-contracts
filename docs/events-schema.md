@@ -15,6 +15,13 @@ Each entry lists the event, the change (added field / renamed topic / removed fi
 | `init`, `created`, `withdraw`, `status`, `cancelled`, `topup`, `paused`, `rate_upd`, `stop_upd`, `near_exp`, `exp_unres`, `upg_prop`, `upg_exec`, `upg_cncl`, `at_set`, `at_up`, `thresh_up`, `split`, `p_stats` | Baseline: topic prefixed with `"v1"` | None. Match on `topic[0] == "v1"`, then `topic[1]` |
 | `receipt`, `archived`, `expired`, `xfr_strm`, `low_bal` | Baseline: emitted **without** a version prefix | Match on `topic[0]` directly. A future version will add the `"v1"` prefix and list it here |
 
+### v1.1 (2026-10-04) — batch threshold setter & cliff parity
+
+| Event | Change | Migration |
+|-------|--------|-----------|
+| `thresh_up` | Clarified: emitted once per stream by both `set_low_balance_threshold` and the new `set_low_balance_threshold_batch` (1..=50 streams, all-or-nothing) | No topic/data change. Indexers may see multiple `thresh_up` events per transaction; key on `topic[2]` (stream_id) |
+| `cliff` | Clarified: `LinearVest` streams with a cliff emit `cliff_reached` once at the cliff boundary and accrue from the cliff, matching payroll streams | No topic/data change. No migration required |
+
 <!-- Template for new entries:
 ### vX.Y (YYYY-MM-DD)
 | Event | Change | Migration |
@@ -248,6 +255,12 @@ Emitted once per stream the first time it is touched (`withdraw`,
 `withdraw_all`, `cancel_stream`, `settle_stream`) at or after its cliff
 (PROD-17). Streams without a cliff never emit it.
 
+This applies to **both** payroll streams and `LinearVest` streams: a
+`LinearVest` schedule configured with a cliff emits `cliff_reached` exactly
+once, when the cliff boundary is reached, and accrual starts from the cliff
+timestamp (nothing accrues before the cliff). This matches payroll stream
+behaviour — there is no difference between the two stream kinds.
+
 **Topic**: `["v1", "cliff", <stream_id>]`
 
 **Data**:
@@ -258,6 +271,30 @@ Emitted once per stream the first time it is touched (`withdraw`,
 {
   "topic": ["v1", "cliff", 7],
   "data": 1767225600
+}
+```
+
+---
+
+### low_balance_threshold_updated
+
+Emitted once per stream whenever its low-balance alert threshold is changed,
+by either `set_low_balance_threshold` (single stream) or
+`set_low_balance_threshold_batch` (1..=50 streams in one transaction). The
+batch entrypoint is all-or-nothing: if any stream fails validation (e.g. the
+stream is terminal or not owned by the employer) no event is emitted for any
+stream. On success, one event is emitted per stream, in input order.
+
+**Topic**: `["v1", "thresh_up", <stream_id>]`
+
+**Data**:
+- `threshold` (i128): The new low-balance threshold for the stream
+
+**Example**:
+```json
+{
+  "topic": ["v1", "thresh_up", 1],
+  "data": [500000]
 }
 ```
 

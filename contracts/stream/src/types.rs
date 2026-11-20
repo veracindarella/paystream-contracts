@@ -241,6 +241,7 @@ pub enum DataKey {
 /// | E025 | ERR_INVALID_AUTO_TOPUP  | Invalid auto top-up parameters                     |
 /// | E026 | ERR_NO_AUTO_TOPUP       | No auto top-up configured for the stream           |
 /// | E029 | ERR_BATCH_TOO_LARGE     | Batch contains more than 50 streams                |
+/// | E036 | ERR_EMPTY_UPDATES       | Batch threshold update list must not be empty      |
 /// Error returned when a payroll rate is zero.
 pub const ERR_ZERO_RATE: &str = "E001: rate_per_second must be greater than zero";
 /// Error returned when a deposit is not positive.
@@ -362,6 +363,9 @@ pub const ERR_INVALID_AUTO_TOPUP: &str = "E030: invalid auto top-up parameters";
 // Restored from ce6fe77 (dropped by a merge).
 /// `archive_stream` was called before `ARCHIVE_WAIT_PERIOD` elapsed.
 pub const ERR_ARCHIVE_TOO_EARLY: &str = "E031: archive waiting period has not elapsed";
+
+/// E036: `set_low_balance_threshold_batch` was called with an empty update list.
+pub const ERR_EMPTY_UPDATES: &str = "E036: batch threshold update list must not be empty";
 
 // Restored from 24db2de (dropped by a merge).
 /// Protocol fee configuration. Absent configuration means fees are disabled.

@@ -8,6 +8,9 @@ use crate::types::{
 };
 use soroban_sdk::Address;
 
+/// Maximum number of entries allowed in a single batch operation.
+pub const MAX_BATCH_SIZE: u32 = 50;
+
 /// Maximum allowed rate_per_second (1 billion tokens/s — prevents overflow in
 /// claimable_amount for any realistic elapsed time up to ~292 years).
 pub const MAX_RATE_PER_SECOND: i128 = 1_000_000_000_i128;
@@ -76,6 +79,34 @@ pub fn validate_top_up(amount: i128) {
 pub fn validate_rate(rate: i128) {
     assert!(rate > 0, "{}", ERR_ZERO_RATE);
     assert!(rate <= MAX_RATE_PER_SECOND, "{}", ERR_INVALID_RATE);
+}
+
+/// Validate the length of a batch operation.
+///
+/// # Panics
+/// - if `len` is 0 (empty batch)
+/// - E033 if `len` > MAX_BATCH_SIZE
+pub fn validate_threshold_batch_len(len: u32) {
+    assert!(len > 0, "batch must not be empty");
+    assert!(
+        len <= MAX_BATCH_SIZE,
+        "{}",
+        crate::types::ERR_BATCH_TOO_LARGE
+    );
+}
+
+/// Validate that a stream is non-terminal (Active or Paused).
+///
+/// # Panics
+/// - E034 if the stream is in a terminal state (Completed or Cancelled)
+pub fn validate_non_terminal(status: &crate::types::StreamStatus) {
+    use crate::types::{StreamStatus, ERR_STREAM_TERMINAL};
+
+    assert!(
+        matches!(status, StreamStatus::Active | StreamStatus::Paused),
+        "{}",
+        ERR_STREAM_TERMINAL
+    );
 }
 
 /// Validate split stream beneficiary configuration.

@@ -1,6 +1,30 @@
 {
   "_comment": "Baseline interface spec for the stream contract. Regenerate with scripts/check-interface.sh --update after intentional public interface changes.",
   "contract": "stream",
-  "functions": [],
-  "events": []
+  "functions": [
+    {
+      "name": "set_low_balance_threshold_batch",
+      "params": [
+        {
+          "name": "employer",
+          "type": "Address"
+        },
+        {
+          "name": "updates",
+          "type": "Vec<(u64, i128)>"
+        }
+      ],
+      "returns": "void"
+    }
+  ],
+  "events": [
+    {
+      "name": "thresh_up",
+      "fields": []
+    },
+    {
+      "name": "cliff",
+      "fields": []
+    }
+  ]
 }

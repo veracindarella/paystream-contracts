@@ -166,6 +166,11 @@ pub fn low_balance(env: &Env, id: u64, employer: &Address, remaining: i128, thre
 }
 
 /// Emitted when `set_low_balance_threshold` updates the stream's alert threshold.
+///
+/// Also emitted once per stream by `set_low_balance_threshold_batch`, so
+/// indexers observe one event per change regardless of entrypoint used.
+///
+/// Topics: `("v1", "thresh_up", stream_id)`; data: `(old_threshold, new_threshold)`.
 pub fn threshold_updated(env: &Env, stream_id: u64, old_threshold: i128, new_threshold: i128) {
     env.events().publish(
         (symbol_short!("v1"), symbol_short!("thresh_up"), stream_id),
