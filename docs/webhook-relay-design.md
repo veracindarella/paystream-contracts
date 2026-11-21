@@ -158,6 +158,106 @@ horizontal sharding (single instance is sufficient at current volume).
 
 ---
 
+## Notification service (issue #413, BE-12)
+
+The relay also feeds a **notification service** that turns alert-class contract events into
+per-user email / push / in-app alerts. It reuses the Ingestor, Filter and Transformer stages
+above; only the routing and delivery layers differ from webhooks.
+
+### 1. Subscribed events
+
+The notifier consumes the same canonical event stream (dedupe on `(ledger, tx_hash,
+event_index)`) and reacts to exactly two event types:
+
+| Source event | Notifier trigger | Recipients |
+|---|---|---|
+| `low_bal` | `stream.low_balance` | stream `employer` (top-up reminder) |
+| `stream_near_expiry` | `stream.near_expiry` | stream `employer` and `employee` (renewal / end-of-stream notice) |
+
+All other events are ignored by the notifier (they remain available to webhooks). Payloads are
+the transformer's v1 shape; `stream.near_expiry` carries `stream_id`, `employer`, `employee`,
+`expires_at` and `remaining`.
+
+### 2. Preferences and channel routing
+
+Each recipient (Stellar address) has a notification preference record:
+
+```json
+{
+  "address": "GABC...",
+  "channels": { "email": true, "push": true, "in_app": true },
+  "events": { "stream.low_balance": true, "stream.near_expiry": true },
+  "email": "user@example.com",
+  "push_subscriptions": ["..."],
+  "quiet_hours": { "start": "22:00", "end": "07:00", "tz": "UTC" }
+}
+```
+
+- Routing: for each event, resolve recipients from the stream's indexed `employer`/`employee`,
+  load their preferences, and fan out to every enabled channel for that event type.
+- `in_app` is always persisted (it is the audit record, §4) even when email/push are disabled;
+  disabling `in_app` only hides it from the UI feed.
+- Missing preference record ⇒ defaults (`in_app` on, email/push off) so no user is spammed
+  before they opt in.
+- `quiet_hours` defers email/push (not `in_app`) to the end of the window; deferred alerts are
+  coalesced per stream.
+
+### 3. Throttling (per stream)
+
+To avoid duplicate alerts for the same stream:
+
+- **Dedupe key:** `(stream_id, event_type, recipient, channel)`. A repeat within the throttle
+  window is dropped and counted as `suppressed`.
+- **Windows:** `low_bal` — 24 h per stream per recipient (a stream that stays low does not
+  re-alert every ledger); `stream_near_expiry` — once per stream per recipient (the event fires
+  once, but redeliveries and replays must not re-notify).
+- **Escalation:** if `remaining` drops further below the threshold by ≥ 25 % since the last
+  alert, the throttle is bypassed once (a worsening balance is new information).
+- Throttle state is stored in the same Postgres instance (no new infra), keyed by the dedupe
+  key with a TTL equal to the window.
+
+### 4. Auditability (delivery and opt-out)
+
+Two append-only tables back the acceptance criteria:
+
+- `notification_deliveries`: `id`, `event_id`, `stream_id`, `recipient`, `channel`,
+  `status` (`queued`/`sent`/`failed`/`suppressed`/`deferred`), `attempts`, `provider_message_id`,
+  `error`, `created_at`, `updated_at`. Every fan-out writes one row per channel, including
+  suppressed and deferred ones, so "why didn't I get an alert?" is answerable.
+- `notification_preference_audit`: `address`, `changed_at`, `actor` (self / admin),
+  `before`, `after` — one row per preference mutation, including opt-outs. Opt-out is
+  immediate: pending queued email/push for that address is cancelled and marked `suppressed`.
+
+Delivery uses the same retry/backoff and DLQ semantics as webhooks (§Retry logic and
+idempotency); email/push providers are called with the event `id` as idempotency key.
+
+### 5. API surface
+
+| Method | Path | Purpose |
+|---|---|---|
+| `GET` | `/v1/notifications/preferences` | Read caller's preferences |
+| `PUT` | `/v1/notifications/preferences` | Update channels / event toggles / quiet hours |
+| `POST` | `/v1/notifications/opt-out` | One-call opt-out of all channels (audited) |
+| `GET` | `/v1/notifications` | In-app feed (paginated, caller-scoped) |
+| `GET` | `/v1/notifications/deliveries` | Caller's delivery audit log |
+
+Auth is the same wallet-signature scheme as webhook registration.
+
+### 6. Complexity
+
+| Component | Effort | Notes |
+|---|---|---|
+| Event mapping + recipient resolution | 0.5 wk | Reuses Ingestor/Transformer |
+| Preferences store + routing + quiet hours | 1 wk | Postgres only |
+| Throttling | 0.5 wk | Dedupe-key table with TTL |
+| Channel adapters (email, push, in-app) | 1 wk | Provider integration + templates |
+| Audit tables + API | 0.5 wk | Append-only, no new infra |
+| **Total** | **~3.5 engineer-weeks** | Depends on BE-01 (event schema v1) |
+
+Deferred: SMS channel, per-stream mute lists, digest/batched summaries, provider failover.
+
+---
+
 ## Acceptance criteria mapping (issue #313)
 
 - [x] Architecture: subscription, filtering, transformation, delivery — §Architecture
@@ -165,3 +265,10 @@ horizontal sharding (single instance is sufficient at current volume).
 - [x] Security: HMAC signing, TLS only — §Security
 - [x] API: registration endpoint, payload schema — §API, §Event payload schema
 - [x] Complexity estimate — §Implementation complexity estimate
+
+## Acceptance criteria mapping (issue #413, BE-12)
+
+- [x] Subscribes to `low_bal` and `stream_near_expiry` — §Notification service §1
+- [x] Per-recipient preferences and channels (email/push/in-app) — §Notification service §2
+- [x] Throttle to avoid duplicate alerts per stream — §Notification service §3
+- [x] Delivery and opt-out auditable — §Notification service §4

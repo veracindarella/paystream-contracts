@@ -18,6 +18,63 @@ pub struct EmergencyDrainProposal {
 
 const DRAIN_PROPOSAL_KEY: &str = "drain_proposal";
 
+const TOKEN_ALLOWLIST_ENABLED_KEY: &str = "token_allowlist_enabled";
+const TOKEN_ALLOWLIST_KEY: &str = "token_allowlist";
+
+/// Returns true when the admin has enabled the token allowlist.
+pub fn is_token_allowlist_enabled(env: &Env) -> bool {
+    env.storage()
+        .instance()
+        .get(&TOKEN_ALLOWLIST_ENABLED_KEY)
+        .unwrap_or(false)
+}
+
+pub fn set_token_allowlist_enabled(env: &Env, enabled: bool) {
+    env.storage()
+        .instance()
+        .set(&TOKEN_ALLOWLIST_ENABLED_KEY, &enabled);
+}
+
+/// Returns true when `token` is present in the stored allowlist.
+pub fn is_token_in_allowlist(env: &Env, token: &Address) -> bool {
+    env.storage()
+        .persistent()
+        .get(&(TOKEN_ALLOWLIST_KEY, token.clone()))
+        .unwrap_or(false)
+}
+
+pub fn add_token_to_allowlist(env: &Env, token: &Address) {
+    env.storage()
+        .persistent()
+        .set(&(TOKEN_ALLOWLIST_KEY, token.clone()), &true);
+}
+
+pub fn remove_token_from_allowlist(env: &Env, token: &Address) {
+    env.storage()
+        .persistent()
+        .remove(&(TOKEN_ALLOWLIST_KEY, token.clone()));
+}
+
+/// Replaces the entire allowlist with `tokens` and enables it when non-empty.
+/// Passing an empty vector disables the allowlist (permissive default).
+pub fn set_token_allowlist(env: &Env, tokens: &soroban_sdk::Vec<Address>) {
+    for token in tokens.iter() {
+        add_token_to_allowlist(env, &token);
+    }
+    set_token_allowlist_enabled(env, !tokens.is_empty());
+}
+
+/// Returns true when `token` may be used for a stream.
+///
+/// The allowlist is permissive by default: when it is disabled (or empty) any
+/// token is accepted. When enabled, only explicitly allowed tokens pass.
+pub fn is_token_allowed(env: &Env, token: &Address) -> bool {
+    if !is_token_allowlist_enabled(env) {
+        return true;
+    }
+    is_token_in_allowlist(env, token)
+}
+
 pub fn set_drain_proposal(env: &Env, proposal: &EmergencyDrainProposal) {
     env.storage().instance().set(&DRAIN_PROPOSAL_KEY, proposal);
 }

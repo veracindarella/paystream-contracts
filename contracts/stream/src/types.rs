@@ -208,6 +208,12 @@ pub enum DataKey {
     LastCreateLedger(Address),
     /// Split stream beneficiaries: stream ID → Vec<SplitBeneficiary> for multi-recipient streams (PROD-22).
     SplitBeneficiaries(u64),
+    /// Whether the token allowlist is enforced on create_stream/create_linear_vest.
+    /// Missing key means the allowlist is disabled (permissive default).
+    TokenAllowlistEnabled,
+    /// Per-token allowlist entry: token address → bool. Only consulted when
+    /// `TokenAllowlistEnabled` is set to true.
+    TokenAllowlist(Address),
 }
 
 /// Contract error codes – panic messages reference these names so callers can

@@ -1,6 +1,80 @@
 {
   "_comment": "Baseline interface spec for the stream contract. Regenerate with scripts/check-interface.sh --update after intentional public interface changes.",
   "contract": "stream",
-  "functions": [],
+  "functions": [
+    {
+      "name": "streams_by_employee_paginated",
+      "params": [
+        {
+          "name": "employee",
+          "type": "Address"
+        },
+        {
+          "name": "start_after",
+          "type": "Option<u64>"
+        },
+        {
+          "name": "limit",
+          "type": "u32"
+        }
+      ],
+      "returns": "Vec<u64>"
+    },
+    {
+      "name": "set_token_allowlist",
+      "params": [
+        {
+          "name": "admin",
+          "type": "Address"
+        },
+        {
+          "name": "nonce",
+          "type": "u64"
+        },
+        {
+          "name": "tokens",
+          "type": "Vec<Address>"
+        }
+      ],
+      "returns": "()"
+    },
+    {
+      "name": "set_token_allowed",
+      "params": [
+        {
+          "name": "admin",
+          "type": "Address"
+        },
+        {
+          "name": "nonce",
+          "type": "u64"
+        },
+        {
+          "name": "token",
+          "type": "Address"
+        },
+        {
+          "name": "allowed",
+          "type": "bool"
+        }
+      ],
+      "returns": "()"
+    },
+    {
+      "name": "get_token_allowlist",
+      "params": [],
+      "returns": "Vec<Address>"
+    },
+    {
+      "name": "is_token_allowed",
+      "params": [
+        {
+          "name": "token",
+          "type": "Address"
+        }
+      ],
+      "returns": "bool"
+    }
+  ],
   "events": []
 }

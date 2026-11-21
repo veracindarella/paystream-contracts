@@ -32,6 +32,30 @@ One card per employer address. Totals are per token — never sum amounts across
 
 > `get_streams_batch` is capped at 50 IDs per call — page through `stream_ids` in chunks of 50.
 
+### Paginated stream listing
+
+For employers with many streams, prefer the paginated query over fetching the full ID list:
+
+```text
+streams_by_employee_paginated(employee: Address, start_after: Option<u64>, limit: u32) -> Vec<u64>
+```
+
+- Returns up to `limit` stream IDs owned by `employee`, ordered by ascending stream ID (stable ordering — IDs are never reused, so pages cannot shift).
+- `start_after` is exclusive: pass the last ID of the previous page (or `None` / `0` for the first page).
+- `limit` is capped at 50; larger values are clamped to 50.
+- The dashboard hydration loop should paginate until a page returns fewer than `limit` items (i.e. until exhausted), then hydrate each page with `get_streams_batch` in chunks of 50.
+
+```text
+let mut cursor = None;
+loop {
+    let page = streams_by_employee_paginated(employer, cursor, 50);
+    if page.is_empty() { break; }
+    hydrate(get_streams_batch(page));
+    cursor = page.last();
+    if page.len() < 50 { break; }
+}
+```
+
 ---
 
 ## 2. Per-Stream Summary
@@ -89,6 +113,21 @@ Contract storage keeps only the current state, so all history comes from events 
 | `rate_upd` | `("rate_upd", id)` | `(old_rate, new_rate)` | `update_rate` |
 | `low_bal` | `("low_bal", id)` | `(employer, remaining, threshold)` | `withdraw` |
 | `paused` | `("paused",)` | `bool` | `pause_contract`, `unpause_contract` |
+| `allowlist` | `("allowlist",)` | `(token, allowed)` | `set_token_allowlist`, `set_token_allowed` |
+
+### Token allowlist
+
+Admins can restrict which SEP-41 token addresses may be used as the stream token, preventing malicious tokens (e.g. ones that revert on transfer) from griefing the contract or trapping deposits.
+
+| Function | Description |
+|---|---|
+| `set_token_allowlist(admin, nonce, tokens: Vec<Address>)` | Replaces the allowlist with `tokens` |
+| `set_token_allowed(admin, nonce, token: Address, allowed: bool)` | Toggles a single token in the allowlist |
+| `is_token_allowed(token: Address) -> bool` | Read-only check |
+
+- **Default is permissive:** an empty allowlist means any token is accepted. Enforcement only kicks in once at least one token is allowlisted.
+- `create_stream` and `create_linear_vest` (and batch variants) reject disallowed tokens when the allowlist is enabled.
+- The dashboard should surface the allowlist state so employers know which tokens they can stream; changes emit the `allowlist` event above.
 
 ---
 

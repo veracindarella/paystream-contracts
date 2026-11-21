@@ -130,9 +130,23 @@ export async function loadEmployerStreams(employer: string): Promise<StreamRow[]
   return hydrate(employer, ids);
 }
 
-/** Fetch every stream paying `employee`, chunked 50 at a time, with claimable amounts. */
+/** Fetch every stream paying `employee`, paginated 50 at a time, with claimable amounts. */
 export async function loadEmployeeStreams(employee: string): Promise<StreamRow[]> {
-  const ids: bigint[] = ((await read(employee, "streams_by_employee", addr(employee))) as bigint[]) || [];
+  const ids: bigint[] = [];
+  let startAfter = 0n;
+  for (;;) {
+    const page: bigint[] =
+      ((await read(
+        employee,
+        "streams_by_employee_paginated",
+        addr(employee),
+        u64(startAfter),
+        nativeToScVal(50, { type: "u32" }),
+      )) as bigint[]) || [];
+    if (page.length === 0) break;
+    ids.push(...page);
+    startAfter = page[page.length - 1];
+  }
   return hydrate(employee, ids);
 }
 

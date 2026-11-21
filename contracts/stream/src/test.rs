@@ -2114,6 +2114,82 @@ fn test_streams_by_employee_paginated_caps_limit_at_50() {
     assert_eq!(page.get(49).unwrap(), 50);
 }
 
+/// SC-50: walking the pages with `start_after` yields every stream exactly
+/// once, in ascending id order (stable ordering across pages).
+#[test]
+fn test_streams_by_employee_paginated_hydrate_loop_is_stable() {
+    let (env, client) = setup();
+    let admin = Address::generate(&env);
+    let employer = Address::generate(&env);
+    let employee = Address::generate(&env);
+    let other_employee = Address::generate(&env);
+    let token_id = setup_token(&env, &employer);
+
+    client.initialize(&admin);
+    // Interleave another employee's streams so the index must filter.
+    for _ in 0..7 {
+        client.create_stream(&employer, &employee, &token_id, &10_000, &10, &0, &None, &None);
+        client.create_stream(&employer, &other_employee, &token_id, &10_000, &10, &0, &None, &None);
+    }
+
+    let mut seen = soroban_sdk::Vec::new(&env);
+    let mut start_after = 0u64;
+    loop {
+        let page = client.streams_by_employee_paginated(&employee, &start_after, &3);
+        if page.is_empty() {
+            break;
+        }
+        for id in page.iter() {
+            seen.push_back(id);
+        }
+        start_after = page.get(page.len() - 1).unwrap();
+    }
+
+    assert_eq!(seen.len(), 7);
+    for i in 0..seen.len() {
+        let id = seen.get(i).unwrap();
+        assert_eq!(id, 2 * (i as u64) + 1, "ids must be ascending and stable");
+        assert_eq!(client.get_stream(&id).employee, employee);
+    }
+}
+
+/// SC-50: `start_after` is exclusive; a limit of 0 yields an empty page.
+#[test]
+fn test_streams_by_employee_paginated_start_after_exclusive_and_zero_limit() {
+    let (env, client) = setup();
+    let admin = Address::generate(&env);
+    let employer = Address::generate(&env);
+    let employee = Address::generate(&env);
+    let token_id = setup_token(&env, &employer);
+
+    client.initialize(&admin);
+    for _ in 0..3 {
+        client.create_stream(&employer, &employee, &token_id, &10_000, &10, &0, &None, &None);
+    }
+
+    let page = client.streams_by_employee_paginated(&employee, &1, &10);
+    assert_eq!(page.len(), 2);
+    assert_eq!(page.get(0).unwrap(), 2);
+    assert_eq!(page.get(1).unwrap(), 3);
+
+    assert!(client
+        .streams_by_employee_paginated(&employee, &0, &0)
+        .is_empty());
+}
+
+/// SC-50: an employee with no streams gets an empty page.
+#[test]
+fn test_streams_by_employee_paginated_unknown_employee_returns_empty() {
+    let (env, client) = setup();
+    let admin = Address::generate(&env);
+    let employee = Address::generate(&env);
+    client.initialize(&admin);
+
+    assert!(client
+        .streams_by_employee_paginated(&employee, &0, &50)
+        .is_empty());
+}
+
 /// stream_count_by_token returns 0 for a token with no streams.
 #[test]
 fn test_stream_count_by_token_unknown_token_returns_zero() {
@@ -5211,4 +5287,200 @@ fn test_template_save_requires_employer_auth() {
     // No mock_all_auths: the employer has not signed.
     let res = client.try_save_template(&employer, &1, &template_params(&env, &token, None));
     assert!(res.is_err(), "save_template must require the employer's auth");
+}
+
+// ---------------------------------------------------------------------------
+// SC-73 – settle_stream must increment `withdrawn` exactly once
+// ---------------------------------------------------------------------------
+
+/// Settling at stop_time with the full deposit claimable pays the employee
+/// once and leaves `withdrawn == deposit` (not 2x), with the stream Exhausted.
+#[test]
+fn test_settle_stream_at_stop_time_withdraws_exactly_once() {
+    let (env, client) = setup();
+    let admin = Address::generate(&env);
+    let employer = Address::generate(&env);
+    let employee = Address::generate(&env);
+    let token_id = setup_token(&env, &employer);
+    let token = paystream_token::TokenContractClient::new(&env, &token_id);
+
+    client.initialize(&admin);
+    client.set_min_deposit(&admin, &0, &100);
+    env.ledger().with_mut(|l| l.timestamp = 1_000);
+    let id = client.create_stream(&employer, &employee, &token_id, &1_000, &1, &1_100, &None, &None);
+
+    // Past stop_time: the whole deposit is claimable.
+    env.ledger().with_mut(|l| l.timestamp = 1_100);
+    assert_eq!(client.claimable(&id), 1_000);
+
+    let settled = client.settle_stream(&id);
+    assert_eq!(settled, 1_000);
+
+    let s = client.get_stream(&id);
+    assert_eq!(s.withdrawn, s.deposit, "withdrawn must equal deposit exactly once");
+    assert_eq!(s.withdrawn, 1_000);
+    assert_eq!(s.status, StreamStatus::Exhausted);
+    assert_eq!(token.balance(&employee), 1_000);
+}
+
+/// Partial settle regression: settling mid-stream only moves the claimable
+/// amount, and a second settle tops up to the full deposit without doubling.
+#[test]
+fn test_settle_stream_partial_then_full_no_double_count() {
+    let (env, client) = setup();
+    let admin = Address::generate(&env);
+    let employer = Address::generate(&env);
+    let employee = Address::generate(&env);
+    let token_id = setup_token(&env, &employer);
+    let token = paystream_token::TokenContractClient::new(&env, &token_id);
+
+    client.initialize(&admin);
+    client.set_min_deposit(&admin, &0, &100);
+    env.ledger().with_mut(|l| l.timestamp = 1_000);
+    let id = client.create_stream(&employer, &employee, &token_id, &1_000, &1, &0, &None, &None);
+
+    env.ledger().with_mut(|l| l.timestamp = 1_300);
+    assert_eq!(client.settle_stream(&id), 300);
+    let s = client.get_stream(&id);
+    assert_eq!(s.withdrawn, 300);
+    assert_eq!(s.status, StreamStatus::Active);
+
+    env.ledger().with_mut(|l| l.timestamp = 1_700);
+    assert_eq!(client.settle_stream(&id), 400);
+    let s = client.get_stream(&id);
+    assert_eq!(s.withdrawn, 700);
+    assert_eq!(token.balance(&employee), 700);
+
+    env.ledger().with_mut(|l| l.timestamp = 2_500);
+    assert_eq!(client.settle_stream(&id), 300);
+    let s = client.get_stream(&id);
+    assert_eq!(s.withdrawn, s.deposit);
+    assert_eq!(s.status, StreamStatus::Exhausted);
+    assert_eq!(token.balance(&employee), 1_000);
+}
+
+// ---------------------------------------------------------------------------
+// SC-67 – admin-managed token allowlist
+// ---------------------------------------------------------------------------
+
+/// With no allowlist configured (default), any token is accepted.
+#[test]
+fn test_token_allowlist_empty_is_permissive() {
+    let (env, client) = setup();
+    let admin = Address::generate(&env);
+    let employer = Address::generate(&env);
+    let employee = Address::generate(&env);
+    let token_id = setup_token(&env, &employer);
+
+    client.initialize(&admin);
+    assert!(!client.is_token_allowlist_enabled());
+
+    let id = client.create_stream(&employer, &employee, &token_id, &10_000, &10, &0, &None, &None);
+    assert_eq!(client.get_stream(&id).token, token_id);
+
+    let vest_id =
+        client.create_linear_vest(&employer, &employee, &token_id, &10_000, &10, &None);
+    assert_eq!(client.get_stream(&vest_id).token, token_id);
+}
+
+/// Once the allowlist is enabled, listed tokens are accepted by both
+/// create_stream and create_linear_vest.
+#[test]
+fn test_token_allowlist_allows_listed_token() {
+    let (env, client) = setup();
+    let admin = Address::generate(&env);
+    let employer = Address::generate(&env);
+    let employee = Address::generate(&env);
+    let token_id = setup_token(&env, &employer);
+
+    client.initialize(&admin);
+    let mut allow = soroban_sdk::Vec::new(&env);
+    allow.push_back(token_id.clone());
+    client.set_token_allowlist(&admin, &0, &allow);
+    assert!(client.is_token_allowlist_enabled());
+    assert!(client.is_token_allowed(&token_id));
+
+    let id = client.create_stream(&employer, &employee, &token_id, &10_000, &10, &0, &None, &None);
+    assert_eq!(client.get_stream(&id).token, token_id);
+
+    let vest_id =
+        client.create_linear_vest(&employer, &employee, &token_id, &10_000, &10, &None);
+    assert_eq!(client.get_stream(&vest_id).token, token_id);
+}
+
+/// A token that is not on the enabled allowlist is rejected by create_stream.
+#[test]
+#[should_panic(expected = "E036")]
+fn test_token_allowlist_rejects_unlisted_token_create_stream() {
+    let (env, client) = setup();
+    let admin = Address::generate(&env);
+    let employer = Address::generate(&env);
+    let employee = Address::generate(&env);
+    let allowed = setup_token(&env, &employer);
+    let blocked = setup_token(&env, &employer);
+
+    client.initialize(&admin);
+    let mut allow = soroban_sdk::Vec::new(&env);
+    allow.push_back(allowed);
+    client.set_token_allowlist(&admin, &0, &allow);
+
+    client.create_stream(&employer, &employee, &blocked, &10_000, &10, &0, &None, &None);
+}
+
+/// A token that is not on the enabled allowlist is rejected by create_linear_vest.
+#[test]
+#[should_panic(expected = "E036")]
+fn test_token_allowlist_rejects_unlisted_token_create_linear_vest() {
+    let (env, client) = setup();
+    let admin = Address::generate(&env);
+    let employer = Address::generate(&env);
+    let employee = Address::generate(&env);
+    let allowed = setup_token(&env, &employer);
+    let blocked = setup_token(&env, &employer);
+
+    client.initialize(&admin);
+    let mut allow = soroban_sdk::Vec::new(&env);
+    allow.push_back(allowed);
+    client.set_token_allowlist(&admin, &0, &allow);
+
+    client.create_linear_vest(&employer, &employee, &blocked, &10_000, &10, &None);
+}
+
+/// Clearing the allowlist restores permissive behavior.
+#[test]
+fn test_token_allowlist_cleared_restores_permissive() {
+    let (env, client) = setup();
+    let admin = Address::generate(&env);
+    let employer = Address::generate(&env);
+    let employee = Address::generate(&env);
+    let allowed = setup_token(&env, &employer);
+    let other = setup_token(&env, &employer);
+
+    client.initialize(&admin);
+    let mut allow = soroban_sdk::Vec::new(&env);
+    allow.push_back(allowed);
+    client.set_token_allowlist(&admin, &0, &allow);
+    assert!(client.is_token_allowlist_enabled());
+
+    let empty: soroban_sdk::Vec<Address> = soroban_sdk::Vec::new(&env);
+    client.set_token_allowlist(&admin, &1, &empty);
+    assert!(!client.is_token_allowlist_enabled());
+
+    let id = client.create_stream(&employer, &employee, &other, &10_000, &10, &0, &None, &None);
+    assert_eq!(client.get_stream(&id).token, other);
+}
+
+/// Only the admin may change the allowlist.
+#[test]
+#[should_panic(expected = "E002")]
+fn test_token_allowlist_requires_admin() {
+    let (env, client) = setup();
+    let admin = Address::generate(&env);
+    let attacker = Address::generate(&env);
+    let token_id = setup_token(&env, &admin);
+
+    client.initialize(&admin);
+    let mut allow = soroban_sdk::Vec::new(&env);
+    allow.push_back(token_id);
+    client.set_token_allowlist(&attacker, &0, &allow);
 }

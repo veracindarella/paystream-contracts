@@ -318,6 +318,48 @@ Emitted when a pending contract upgrade is cancelled.
 }
 ```
 
+---
+
+### low_balance
+
+Emitted when a stream's remaining balance drops below its configured low-balance threshold. Consumed by the notification service (BE-12) to alert the employer (and optionally the employee).
+
+**Topic**: `["low_bal", <stream_id>]`
+
+> Note: `low_bal` is currently emitted **without** a version prefix (see v1.0 baseline). Match on `topic[0] == "low_bal"` and read the stream id from `topic[1]`.
+
+**Data**:
+- `remaining` (i128): Remaining stream balance at the time of emission
+- `threshold` (i128): The low-balance threshold that was crossed
+
+**Example**:
+```json
+{
+  "topic": ["low_bal", 1],
+  "data": [50000, 100000]
+}
+```
+
+---
+
+### stream_near_expiry
+
+Emitted when a stream is approaching its end time (within the configured near-expiry window). Consumed by the notification service (BE-12) to alert the employer and employee.
+
+**Topic**: `["v1", "near_exp", <stream_id>]`
+
+**Data**:
+- `end_time` (u64): The stream's scheduled end timestamp
+- `seconds_remaining` (u64): Seconds remaining until `end_time` at emission time
+
+**Example**:
+```json
+{
+  "topic": ["v1", "near_exp", 1],
+  "data": [1767225600, 86400]
+}
+```
+
 ## Type Reference
 
 | Type | Description | Example |
@@ -393,3 +435,103 @@ function parseV1Event(topic, data) {
 ## Testing
 
 Event schemas are validated in the contract test suite. See `contracts/stream/src/test.rs` for tests that verify event structure matches this documentation.
+
+---
+
+## Notification Service (BE-12)
+
+The notification service consumes the `low_bal` and `stream_near_expiry` events and turns them into per-recipient alerts delivered over email, push, and in-app channels according to each recipient's preferences. This section is the design contract for the notifier implementation.
+
+### Subscribed Events
+
+| Event | Topic match | Stream id | Payload fields used |
+|-------|-------------|-----------|---------------------|
+| `low_bal` | `topic[0] == "low_bal"` | `topic[1]` | `remaining`, `threshold` |
+| `stream_near_expiry` | `topic[0] == "v1"` and `topic[1] == "near_exp"` | `topic[2]` | `end_time`, `seconds_remaining` |
+
+The notifier subscribes to both events and normalizes them into a single internal `NotificationEvent` record:
+
+```json
+{
+  "event_type": "low_balance" | "stream_near_expiry",
+  "stream_id": 1,
+  "remaining": 50000,          // low_balance only
+  "threshold": 100000,         // low_balance only
+  "end_time": 1767225600,      // stream_near_expiry only
+  "seconds_remaining": 86400,  // stream_near_expiry only
+  "ledger": 1234567,
+  "tx_hash": "abcd...",
+  "observed_at": "2026-09-27T12:00:00Z"
+}
+```
+
+### Recipients
+
+Each event resolves to one or more recipients based on the stream's on-chain parties:
+
+- `low_balance`: employer (primary), employee (optional, opt-in).
+- `stream_near_expiry`: employer and employee.
+
+Recipient addresses are resolved to notification profiles via the user preferences store. Addresses without a profile receive no notifications (implicit opt-out) but the resolution attempt is still recorded in the audit log.
+
+### Per-Recipient Preference Model
+
+Preferences are stored per recipient address and per event type. Each channel can be independently enabled or disabled.
+
+```json
+{
+  "address": "GABCD...",
+  "event_type": "low_balance",
+  "channels": {
+    "email": { "enabled": true, "destination": "user@example.com" },
+    "push":  { "enabled": false, "destination": null },
+    "in_app": { "enabled": true, "destination": null }
+  },
+  "quiet_hours": { "start": "22:00", "end": "07:00", "timezone": "UTC" },
+  "updated_at": "2026-09-27T12:00:00Z"
+}
+```
+
+Rules:
+
+- **Default preferences** (when a profile exists but no explicit preference for an event type): `in_app` enabled, `email` and `push` disabled.
+- **Channel independence**: enabling/disabling one channel never affects the others.
+- **Destination required**: `email` and `push` require a non-null destination; if missing, the channel is treated as disabled and the skip is audited.
+- **Quiet hours**: non-`in_app` channels are deferred (not dropped) during quiet hours; `in_app` is always delivered immediately.
+- **Opt-out**: a recipient may opt out of an event type entirely (`channels` all disabled) or globally. Opt-outs are recorded in the audit log (see below).
+
+### Throttling and Deduplication
+
+To avoid duplicate alerts per stream, the notifier applies throttling keyed by `(recipient_address, event_type, stream_id)`:
+
+- **Deduplication window**: after a successful delivery to a recipient for a given key, subsequent events with the same key are suppressed for a configurable window (default: 24 hours for `low_balance`, 72 hours for `stream_near_expiry`).
+- **Per-channel dedup**: the dedup key includes the channel, so a suppressed email does not suppress an in-app alert.
+- **State transitions**: a `low_balance` alert is re-armed once the stream's remaining balance rises back above the threshold (observed via a subsequent `topup`/`at_up` event or a fresh `low_bal` with `remaining > threshold`). A `stream_near_expiry` alert is re-armed if `end_time` changes.
+- **Idempotency**: events are deduplicated by `(tx_hash, event_index)` before throttling so replayed ledgers never produce duplicate deliveries.
+
+### Audit Logging
+
+Every delivery decision is appended to an append-only audit log. Each entry records:
+
+```json
+{
+  "id": "uuid",
+  "recipient": "GABCD...",
+  "event_type": "low_balance",
+  "stream_id": 1,
+  "channel": "email",
+  "action": "delivered" | "suppressed" | "opted_out" | "skipped" | "failed",
+  "reason": "throttled" | "quiet_hours" | "channel_disabled" | "no_destination" | "no_profile" | null,
+  "source": { "tx_hash": "abcd...", "ledger": 1234567 },
+  "attempted_at": "2026-09-27T12:00:00Z",
+  "delivered_at": "2026-09-27T12:00:01Z"
+}
+```
+
+Audit requirements:
+
+- **Deliveries**: every successful send is logged with channel, recipient, and source event reference.
+- **Suppressions**: throttled and deduplicated events are logged with `action: "suppressed"` and the matching `reason`.
+- **Opt-outs**: preference changes that disable a channel or event type are logged with `action: "opted_out"`, including the previous and new preference state.
+- **Failures**: delivery errors are logged with `action: "failed"` and the error detail; retries are logged as separate entries.
+- **Immutability**: audit entries are append-only and retained for the configured retention period; they are queryable by recipient, stream, and event type.

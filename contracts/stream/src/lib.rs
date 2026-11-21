@@ -292,6 +292,79 @@ impl StreamContract {
         events::max_creates_per_ledger_updated(&env, max);
     }
 
+    /// Enable or disable the token allowlist (SC-67).
+    ///
+    /// When enabled, `create_stream`, `create_linear_vest`, and
+    /// `create_streams_batch` reject any token not present in the allowlist.
+    /// An empty allowlist is permissive: even when the flag is enabled, an
+    /// empty set allows every token.
+    ///
+    /// # Parameters
+    /// - `admin` — must match the stored admin (requires auth)
+    /// - `nonce` — current admin nonce (replay protection)
+    /// - `enabled` — whether the allowlist is enforced
+    ///
+    /// # Errors
+    /// - Panics if admin auth fails or does not match the stored admin
+    /// - E009 if `nonce` is wrong
+    pub fn set_token_allowlist_enabled(env: Env, admin: Address, nonce: u64, enabled: bool) {
+        admin.require_auth();
+        let stored_admin = get_admin(&env);
+        assert_eq!(admin, stored_admin, "{}", ERR_NOT_ADMIN);
+        consume_admin_nonce(&env, nonce);
+        storage::set_token_allowlist_enabled(&env, enabled);
+    }
+
+    /// Replace the token allowlist with `tokens` (SC-67).
+    ///
+    /// The allowlist is enforced only when enabled via
+    /// [`set_token_allowlist_enabled`]. An empty vector is permissive.
+    ///
+    /// # Parameters
+    /// - `admin` — must match the stored admin (requires auth)
+    /// - `nonce` — current admin nonce (replay protection)
+    /// - `tokens` — addresses of allowed SEP-41 tokens
+    ///
+    /// # Errors
+    /// - Panics if admin auth fails or does not match the stored admin
+    /// - E009 if `nonce` is wrong
+    pub fn set_token_allowlist(env: Env, admin: Address, nonce: u64, tokens: Vec<Address>) {
+        admin.require_auth();
+        let stored_admin = get_admin(&env);
+        assert_eq!(admin, stored_admin, "{}", ERR_NOT_ADMIN);
+        consume_admin_nonce(&env, nonce);
+        storage::set_token_allowlist(&env, &tokens);
+    }
+
+    /// Add or remove a single token from the allowlist (SC-67).
+    ///
+    /// # Parameters
+    /// - `admin` — must match the stored admin (requires auth)
+    /// - `nonce` — current admin nonce (replay protection)
+    /// - `token` — token address to toggle
+    /// - `allowed` — `true` to allow, `false` to disallow
+    ///
+    /// # Errors
+    /// - Panics if admin auth fails or does not match the stored admin
+    /// - E009 if `nonce` is wrong
+    pub fn set_token_allowed(env: Env, admin: Address, nonce: u64, token: Address, allowed: bool) {
+        admin.require_auth();
+        let stored_admin = get_admin(&env);
+        assert_eq!(admin, stored_admin, "{}", ERR_NOT_ADMIN);
+        consume_admin_nonce(&env, nonce);
+        storage::set_token_allowed(&env, &token, allowed);
+    }
+
+    /// Return whether the token allowlist is currently enforced.
+    pub fn token_allowlist_enabled(env: Env) -> bool {
+        storage::token_allowlist_enabled(&env)
+    }
+
+    /// Return the current token allowlist.
+    pub fn token_allowlist(env: Env) -> Vec<Address> {
+        storage::token_allowlist(&env)
+    }
+
     /// Set the protocol creation fee and its treasury destination.
     ///
     /// The fee is deducted from gross stream deposits. A value of 0 disables
@@ -376,6 +449,8 @@ impl StreamContract {
             &employee,
         );
         validate_cliff(cliff_time, stop_time);
+        // SC-67: reject tokens not on the allowlist when it is enforced.
+        storage::assert_token_allowed(&env, &token_address);
         // A cliff that has already passed is a no-op.
         let cliff = cliff_time.filter(|c| *c > now);
 
@@ -455,6 +530,8 @@ impl StreamContract {
             "cliff cannot exceed vest period"
         );
         assert!(employer != employee, "employer and employee must differ");
+        // SC-67: reject tokens not on the allowlist when it is enforced.
+        storage::assert_token_allowed(&env, &token_address);
         let stop_time = now.checked_add(vest_period).expect(ERR_OVERFLOW);
 
         let (fee_bps, treasury) = get_protocol_fee(&env);
@@ -583,6 +660,8 @@ impl StreamContract {
                 );
             }
             validate_cliff(p.cliff_time, p.stop_time);
+            // SC-67: reject tokens not on the allowlist when it is enforced.
+            storage::assert_token_allowed(&env, &p.token);
             assert!(
                 employer != p.employee,
                 "stream[{}]: employer and employee must differ",
@@ -1630,6 +1709,7 @@ impl StreamContract {
             stream.locked = true;
             save_stream(&env, &stream);
 
+            // SC-73: increment `withdrawn` exactly once, before the transfer.
             stream.withdrawn = stream
                 .withdrawn
                 .checked_add(amount)
@@ -1643,15 +1723,10 @@ impl StreamContract {
                 &receipt_owner(&env, &stream),
                 &amount,
             );
-            events::withdrawn(&env, stream_id, &receipt_owner(&env, &stream), amount);
         }
 
-        stream.withdrawn = stream
-            .withdrawn
-            .checked_add(amount)
-            .expect(ERR_OVERFLOW);
-        stream.last_withdraw_time = accrual_start(&env, stream.id, now);
-        stream.pending_accrual = 0;
+        // SC-73: do NOT add `amount` to `withdrawn` again here — it was already
+        // accounted for above. Only finalise the stream state.
         set_stream_ended_at(&env, stream_id, now);
         stream.status = StreamStatus::Exhausted;
         stream.locked = false;
@@ -2355,6 +2430,45 @@ impl StreamContract {
                 page.push_back(stream_id);
             }
             position += 1;
+        }
+        page
+    }
+
+    /// Return a page of stream IDs paying `employee`, using a cursor (SC-50).
+    ///
+    /// Mirrors the SC-49 cursor pagination for employers. Stream IDs are
+    /// returned in stable ascending creation order. `start_after` is the last
+    /// stream ID from the previous page (pass `0` for the first page); only
+    /// IDs strictly greater than `start_after` are returned. `limit` is capped
+    /// at 50.
+    ///
+    /// # Parameters
+    /// - `employee` — employee address to query
+    /// - `start_after` — exclusive cursor; last ID of the previous page (0 = start)
+    /// - `limit` — maximum number of IDs to return (capped at 50)
+    ///
+    /// # Returns
+    /// `Vec<u64>` page of stream IDs in ascending order.
+    pub fn streams_by_employee_paginated_cursor(
+        env: Env,
+        employee: Address,
+        start_after: u64,
+        limit: u32,
+    ) -> Vec<u64> {
+        let stream_ids = stream_ids_by_employee(&env, &employee);
+        let mut page: Vec<u64> = Vec::new(&env);
+        let cap = limit.min(50);
+        if cap == 0 {
+            return page;
+        }
+        for stream_id in stream_ids.iter() {
+            if stream_id <= start_after {
+                continue;
+            }
+            if page.len() >= cap {
+                break;
+            }
+            page.push_back(stream_id);
         }
         page
     }
