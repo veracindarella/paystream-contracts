@@ -131,6 +131,8 @@ make test
 # or: cargo test
 ```
 
+Project coverage is tracked by [Codecov](https://codecov.io/gh/veracindarella/paystream-contracts) and enforced via a required status check: the `codecov/project` check fails CI when total coverage drops below the floor configured in [`codecov.yml`](codecov.yml). Per-target coverage is reported for the `stream` and `token` contracts where useful.
+
 ### Format & Lint
 
 ```bash

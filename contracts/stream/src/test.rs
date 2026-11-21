@@ -1311,6 +1311,113 @@ fn test_update_stop_time_paused_stream_rejected() {
 }
 
 // ---------------------------------------------------------------------------
+// TEST-56 (#571) – update_stop_time validation
+// ---------------------------------------------------------------------------
+
+/// A new_stop_time earlier than the stream's last_withdraw_time is rejected
+/// with E030: the stream must never claim to have stopped before tokens were
+/// already paid out.
+#[test]
+#[should_panic(expected = "E030")]
+fn test_update_stop_time_before_last_withdraw_time_rejected() {
+    let (env, client) = setup();
+    let admin = Address::generate(&env);
+    let employer = Address::generate(&env);
+    let employee = Address::generate(&env);
+    let token_id = setup_token(&env, &employer);
+
+    client.initialize(&admin);
+    env.ledger().with_mut(|l| l.timestamp = 1_000);
+    let id = client.create_stream(
+        &employer,
+        &employee,
+        &token_id,
+        &10_000,
+        &10,
+        &0,
+        &None,
+        &None,
+    );
+
+    // Withdraw at t=1_100 so last_withdraw_time becomes 1_100.
+    env.ledger().with_mut(|l| l.timestamp = 1_100);
+    client.withdraw(&employee, &id);
+    assert_eq!(client.get_stream(&id).last_withdraw_time, 1_100);
+
+    // 1_099 < last_withdraw_time (1_100) → rejected.
+    client.update_stop_time(&employer, &id, &1_099);
+}
+
+/// new_stop_time = 0 clears the hard stop (indefinite stream) and is allowed
+/// even after a withdrawal.
+#[test]
+fn test_update_stop_time_zero_allowed_after_withdraw() {
+    let (env, client) = setup();
+    let admin = Address::generate(&env);
+    let employer = Address::generate(&env);
+    let employee = Address::generate(&env);
+    let token_id = setup_token(&env, &employer);
+
+    client.initialize(&admin);
+    env.ledger().with_mut(|l| l.timestamp = 1_000);
+    let id = client.create_stream(
+        &employer,
+        &employee,
+        &token_id,
+        &10_000,
+        &10,
+        &1_500,
+        &None,
+        &None,
+    );
+    assert_eq!(client.get_stream(&id).stop_time, 1_500);
+
+    env.ledger().with_mut(|l| l.timestamp = 1_100);
+    client.withdraw(&employee, &id);
+
+    client.update_stop_time(&employer, &id, &0);
+    assert_eq!(client.get_stream(&id).stop_time, 0);
+
+    // No hard stop: accrual continues past the old stop_time.
+    env.ledger().with_mut(|l| l.timestamp = 1_600);
+    assert_eq!(client.claimable(&id), 500);
+}
+
+/// A future new_stop_time is accepted and stored on the stream.
+#[test]
+fn test_update_stop_time_future_allowed() {
+    let (env, client) = setup();
+    let admin = Address::generate(&env);
+    let employer = Address::generate(&env);
+    let employee = Address::generate(&env);
+    let token_id = setup_token(&env, &employer);
+
+    client.initialize(&admin);
+    env.ledger().with_mut(|l| l.timestamp = 1_000);
+    let id = client.create_stream(
+        &employer,
+        &employee,
+        &token_id,
+        &10_000,
+        &10,
+        &0,
+        &None,
+        &None,
+    );
+
+    env.ledger().with_mut(|l| l.timestamp = 1_100);
+    client.withdraw(&employee, &id);
+
+    let future_stop_time = env.ledger().timestamp() + 1_000;
+    client.update_stop_time(&employer, &id, &future_stop_time);
+    assert_eq!(client.get_stream(&id).stop_time, future_stop_time);
+
+    // Claimable is capped at the new stop_time.
+    env.ledger().with_mut(|l| l.timestamp = future_stop_time + 1_000);
+    assert_eq!(client.claimable(&id), 10_000);
+}
+
+// ---------------------------------------------------------------------------
 // Issue #20 – Contract upgrade / migration path
 // ---------------------------------------------------------------------------
 

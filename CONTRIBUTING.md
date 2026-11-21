@@ -537,15 +537,51 @@ make coverage      # print a per-file coverage summary
 
 Target baseline: **>90% line coverage** for `contracts/stream` and `contracts/token`. New code should not lower coverage.
 
-#### Codecov patch coverage gate (enforced in CI)
+#### Codecov coverage gates (enforced in CI)
 
-A `codecov.yml` file at the repository root configures a **minimum 80% patch coverage** requirement. This means:
+A `codecov.yml` file at the repository root configures two enforced coverage gates. Both are reported as **required status checks** on every PR, and CI fails if either one regresses:
 
-- Every PR must have at least 80% of its **new and changed lines** covered by tests.
-- Codecov will post a status check on each PR. CI fails if the patch coverage falls below 80%.
-- The project-level coverage target is tracked for visibility but is **not** a hard gate (to avoid penalising PRs that touch legacy uncovered code).
+| Gate | Scope | Threshold | Behaviour on regression |
+|---|---|---|---|
+| `project` | Whole repository | **90% line coverage floor** | Fails the PR — coverage may not drop below the floor |
+| `patch` | New and changed lines | **80% patch coverage** | Fails the PR — new code must be tested |
 
-If your PR intentionally adds code that cannot be unit-tested (e.g., event-emission helpers, dead-code stubs, or wasm-only paths), document the gap in the PR description so reviewers can verify the `codecov.yml` ignore list or approve the exception.
+The project gate uses a `target: 90%` with `threshold: 0%`, so any drop below the floor fails the check. The patch gate uses `target: 80%` with a small tolerance for generated or hard-to-test lines.
+
+##### Per-flag targets
+
+Coverage is uploaded with separate flags so each contract is gated independently:
+
+| Flag | Paths | Project target |
+|---|---|---|
+| `stream` | `contracts/stream/` | 90% |
+| `token` | `contracts/token/` | 90% |
+
+Each flag produces its own status check (`codecov/project/stream`, `codecov/project/token`, and the combined `codecov/project`). A regression in either contract fails its flag check, which fails the PR. This keeps a well-covered contract from masking a drop in another.
+
+##### What this means for contributors
+
+- Every PR must keep the **overall project coverage at or above 90%** and have at least **80% of its new and changed lines** covered by tests.
+- Codecov posts the status checks automatically once the `Coverage` workflow finishes. Wait for them to turn green before requesting review.
+- If your PR intentionally adds code that cannot be unit-tested (e.g., event-emission helpers, dead-code stubs, or wasm-only paths), document the gap in the PR description so reviewers can verify the `codecov.yml` ignore list or approve the exception.
+
+##### Verifying coverage locally before pushing
+
+Run the same measurement the CI workflow uses, then check the summary against the floors above:
+
+```bash
+cargo install cargo-llvm-cov   # one-time install
+make coverage                  # per-file summary for the whole workspace
+```
+
+To check a single contract against its flag target:
+
+```bash
+cargo llvm-cov --package paystream-stream --summary-only
+cargo llvm-cov --package paystream-token  --summary-only
+```
+
+If a file you touched shows a lower percentage than before, add tests before opening the PR — the `patch` gate will otherwise fail on the changed lines.
 
 ### Mutation testing
 

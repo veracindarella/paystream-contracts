@@ -166,24 +166,101 @@ jobs:
           name: wasm-contracts
           path: target/wasm32-unknown-unknown/release/*.wasm
 
+  docs-quickstart:
+    name: Validate SDK quickstart examples
+    runs-on: ubuntu-latest
+    needs: build-wasm
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de # master
+        with:
+          toolchain: stable
+          targets: wasm32-unknown-unknown
+
+      - name: Install Stellar CLI
+        run: cargo install --locked stellar-cli@${{ env.STELLAR_CLI_VERSION }} --features opt
+
+      - name: Download WASM artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: wasm-contracts
+          path: target/wasm32-unknown-unknown/release
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: npm
+          cache-dependency-path: docs/quickstart/typescript/package-lock.json
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install TypeScript example dependencies
+        working-directory: docs/quickstart/typescript
+        run: npm ci
+
+      - name: Type-check TypeScript example
+        working-directory: docs/quickstart/typescript
+        run: npx tsc --noEmit
+
+      - name: Install Python example dependencies
+        working-directory: docs/quickstart/python
+        run: pip install -r requirements.txt
+
+      - name: Compile Python example
+        working-directory: docs/quickstart/python
+        run: python -m compileall -q .
+
+      - name: Start local Stellar sandbox
+        run: |
+          stellar network container start local || true
+          stellar network container logs local >/dev/null 2>&1 || true
+
+      - name: Run TypeScript quickstart (create/withdraw/query)
+        working-directory: docs/quickstart/typescript
+        env:
+          STELLAR_NETWORK: local
+          STELLAR_RPC_URL: http://localhost:8000/soroban/rpc
+          STELLAR_NETWORK_PASSPHRASE: "Standalone Network ; February 2017"
+        run: npm run quickstart
+
+      - name: Run Python quickstart (create/withdraw/query)
+        working-directory: docs/quickstart/python
+        env:
+          STELLAR_NETWORK: local
+          STELLAR_RPC_URL: http://localhost:8000/soroban/rpc
+          STELLAR_NETWORK_PASSPHRASE: "Standalone Network ; February 2017"
+        run: python quickstart.py
+
+      - name: Stop local Stellar sandbox
+        if: always()
+        run: stellar network container stop local || true
+
   scheduled-summary:
     name: Scheduled CI summary
     if: ${{ always() && github.event_name == 'schedule' }}
-    needs: [test, build-wasm]
+    needs: [test, build-wasm, docs-quickstart]
     runs-on: ubuntu-latest
     steps:
       - name: Report scheduled results
         env:
           TEST_RESULT: ${{ needs.test.result }}
           WASM_RESULT: ${{ needs.build-wasm.result }}
+          DOCS_RESULT: ${{ needs.docs-quickstart.result }}
         run: |
           {
             echo "## Weekly scheduled CI"
             echo ""
             echo "- Toolchain matrix: $TEST_RESULT"
             echo "- WASM build: $WASM_RESULT"
+            echo "- SDK quickstart examples: $DOCS_RESULT"
           } >> "$GITHUB_STEP_SUMMARY"
-          if [[ "$TEST_RESULT" == "failure" || "$WASM_RESULT" == "failure" ]]; then
+          if [[ "$TEST_RESULT" == "failure" || "$WASM_RESULT" == "failure" || "$DOCS_RESULT" == "failure" ]]; then
             echo "A scheduled CI job failed. Review the failed job logs above."
           else
             echo "Scheduled CI completed without blocking failures."

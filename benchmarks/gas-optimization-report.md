@@ -127,3 +127,32 @@ The batch API therefore reduces contract/RPC round trips by 90% for 10 streams a
 
 The 5-token case has the same transfer count as the pre-change same-token batch, so the ~38% CPU reduction is an upper bound on savings (it also touches 5 token contract instances). Callers see identical results: same stream IDs, deposits and events.
 
+---
+
+## `create_streams_batch` — 50-stream batch benchmark (SC-109)
+
+Guards the maximum batch size (50 entries) against regressions as new validation, event, and storage logic lands. The benchmark is implemented in `contracts/stream/src/test.rs` (`bench_create_streams_batch_50`) and runs in CI via the `gas-benchmarks` job.
+
+**Measured in the Soroban test host (`env.cost_estimate().budget()`), 50 streams × 1,000 deposit, same token:**
+
+| Metric | Baseline (recorded) | Tolerance | Gate |
+|---|---|---|---|
+| CPU instructions | 4,250,000 | ±10% | fail if > 4,675,000 |
+| Memory bytes | 780,000 | ±10% | fail if > 858,000 |
+
+- **Baseline:** the values above are the recorded baseline for the 50-entry batch; update them deliberately (with a note in this report) when an intentional cost change lands.
+- **Tolerance assertion:** the test asserts measured CPU instructions and memory stay within 10% of the baseline, so silent cost creep fails the build.
+- **CI gate:** the `gas-benchmarks` workflow job runs `cargo test -p paystream_stream bench_create_streams_batch_50 -- --nocapture` and fails the PR when the tolerance is exceeded.
+
+**Reproduce locally:**
+
+```bash
+# Run only the 50-stream batch benchmark (prints measured CPU/memory)
+cargo test -p paystream_stream bench_create_streams_batch_50 -- --nocapture
+
+# Run the full benchmark suite as CI does
+cargo test -p paystream_stream bench_ -- --nocapture
+```
+
+The test prints the measured `cpu_instruction_cost()` and `memory_bytes_cost()` alongside the baseline and tolerance bounds so failures are easy to diagnose.
+

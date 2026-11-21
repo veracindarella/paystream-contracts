@@ -166,6 +166,70 @@ Run `claimable` again — it restarts from near `0` and keeps growing.
 
 ---
 
+## SDK quickstart (TypeScript and Python)
+
+The CLI steps above use raw `stellar contract invoke` calls. If you are building an
+application, use the typed SDK clients instead. Two runnable examples live in this repo:
+
+- [`examples/sdk-quickstart-ts`](../examples/sdk-quickstart-ts) — TypeScript with
+  [`@stellar/stellar-sdk`](https://www.npmjs.com/package/@stellar/stellar-sdk)
+- [`examples/sdk-quickstart-py`](../examples/sdk-quickstart-py) — Python with
+  [`stellar-sdk`](https://pypi.org/project/stellar-sdk/)
+
+Each example creates a stream, queries `claimable` and `stream_status`, and withdraws
+from it end-to-end against Stellar Testnet.
+
+### Configuration
+
+Both examples read the same environment variables:
+
+| Variable | Description |
+| --- | --- |
+| `STREAM_ID` | PayStream contract ID (see [testnet.md](testnet.md#current-contract-ids)) |
+| `TOKEN_ID` | Token contract ID (native SAC by default) |
+| `EMPLOYER_SECRET` | Secret key of the employer account (funds the stream) |
+| `EMPLOYEE_SECRET` | Secret key of the employee account (withdraws) |
+| `RPC_URL` | Optional, defaults to `https://soroban-testnet.stellar.org` |
+| `NETWORK_PASSPHRASE` | Optional, defaults to `Test SDF Network ; September 2015` |
+
+You can reuse the keys created in section 2:
+
+```bash
+export STREAM_ID=<STREAM_CONTRACT_ID_FROM_TESTNET_MD>
+export TOKEN_ID=$(stellar contract id asset --asset native --network testnet)
+export EMPLOYER_SECRET=$(stellar keys show employer)
+export EMPLOYEE_SECRET=$(stellar keys show employee)
+```
+
+### TypeScript
+
+```bash
+cd examples/sdk-quickstart-ts
+npm install
+npm run start
+```
+
+The script builds a typed `Contract` client from the contract spec, submits
+`create_stream`, polls `claimable` until it is non-zero, prints `stream_status`,
+and finally calls `withdraw`. See the example's README for details.
+
+### Python
+
+```bash
+cd examples/sdk-quickstart-py
+python -m venv .venv && source .venv/bin/activate
+pip install -r requirements.txt
+python quickstart.py
+```
+
+The Python script performs the same create → query → withdraw flow using
+`stellar_sdk` and the contract spec.
+
+Both examples are exercised in CI as part of the documentation build to catch
+drift in the SDK APIs.
+
+---
+
 ## Next steps
 
 - Pause, resume, top up, or cancel the stream: [API Reference](api-reference.md)

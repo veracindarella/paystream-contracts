@@ -2,6 +2,17 @@
 
 How to call the PayStream stream contract from a frontend or Node.js script with [`@stellar/stellar-sdk`](https://github.com/stellar/js-stellar-sdk). Full parameter and error documentation lives in [api-reference.md](api-reference.md).
 
+## Typed SDK quickstart
+
+If you'd rather not hand-encode `ScVal`s, start from the typed SDK quickstart examples instead of the raw examples below:
+
+- **TypeScript:** [`examples/sdk-quickstart-ts`](../examples/sdk-quickstart-ts) — runs end-to-end against testnet.
+- **Python:** [`examples/sdk-quickstart-py`](../examples/sdk-quickstart-py) — equivalent flow using the Python SDK.
+
+Both examples cover the core lifecycle: **create** a stream, **withdraw** from it, and **query** stream state and claimable amounts. They are exercised in CI as part of the documentation build, so they stay in sync with the contract.
+
+The rest of this guide shows the raw `ScVal` approach, which is useful when you need full control over encoding or are integrating with an existing codebase.
+
 ## Setup
 
 ```bash
