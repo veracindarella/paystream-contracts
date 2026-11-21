@@ -35,5 +35,13 @@ name = "fuzz_batch_cancel"
 path = "src/fuzz_batch_cancel.rs"
 
 [[bin]]
+name = "fuzz_update_rate_withdraw"
+path = "src/fuzz_update_rate_withdraw.rs"
+
+[[bin]]
+name = "fuzz_settle_stream"
+path = "src/fuzz_settle_stream.rs"
+
+[[bin]]
 name = "prop_claimable_invariant"
 path = "src/prop_claimable_invariant.rs"

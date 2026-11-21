@@ -38,6 +38,12 @@ jobs:
       - name: Run proptest fuzz (500 000 iterations) — admin nonce
         run: cargo test --package paystream-stream-fuzz --bin fuzz_admin_nonce
 
+      - name: Run proptest fuzz — update_rate / withdraw interleaving
+        run: cargo test --package paystream-stream-fuzz --bin fuzz_update_rate_withdraw
+
+      - name: Run proptest fuzz — settle_stream
+        run: cargo test --package paystream-stream-fuzz --bin fuzz_settle_stream
+
   token-fuzz:
     name: Proptest fuzz token (TOK-19)
     runs-on: ubuntu-latest

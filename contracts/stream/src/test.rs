@@ -5085,6 +5085,116 @@ fn test_no_cliff_stream_unchanged() {
 }
 
 // ---------------------------------------------------------------------------
+// TEST-55 (#570): update_rate banks prior claimable into pending_accrual
+// ---------------------------------------------------------------------------
+
+/// update_rate must bank the claimable accrued at the old rate into
+/// pending_accrual so the employee keeps those earnings.
+#[test]
+fn test_update_rate_banks_pending_accrual() {
+    let (env, client) = setup();
+    let admin = Address::generate(&env);
+    let employer = Address::generate(&env);
+    let employee = Address::generate(&env);
+    let token_id = setup_token(&env, &employer);
+
+    client.initialize(&admin);
+    env.ledger().with_mut(|l| l.timestamp = 1_000);
+    let id = client.create_stream(&employer, &employee, &token_id, &10_000, &10, &0, &None, &None);
+
+    // 100 s at 10/s => 1_000 claimable at the old rate.
+    env.ledger().with_mut(|l| l.timestamp = 1_100);
+    let pre_change_claimable = client.claimable(&id);
+    assert_eq!(pre_change_claimable, 1_000);
+
+    client.update_rate(&employer, &id, &5);
+
+    let s = client.get_stream(&id);
+    assert_eq!(s.rate_per_second, 5);
+    assert_eq!(
+        s.pending_accrual, pre_change_claimable,
+        "pending_accrual must equal the pre-change claimable"
+    );
+    // Immediately after the change, claimable is exactly the banked amount.
+    assert_eq!(client.claimable(&id), pre_change_claimable);
+}
+
+/// Withdrawing after a rate change pays the banked amount plus the amount
+/// accrued at the new rate, without double counting.
+#[test]
+fn test_update_rate_withdraw_pays_banked_plus_new() {
+    let (env, client) = setup();
+    let admin = Address::generate(&env);
+    let employer = Address::generate(&env);
+    let employee = Address::generate(&env);
+    let token_id = setup_token(&env, &employer);
+    let token = paystream_token::TokenContractClient::new(&env, &token_id);
+
+    client.initialize(&admin);
+    env.ledger().with_mut(|l| l.timestamp = 1_000);
+    let id = client.create_stream(&employer, &employee, &token_id, &10_000, &10, &0, &None, &None);
+
+    // 100 s at 10/s => 1_000 banked.
+    env.ledger().with_mut(|l| l.timestamp = 1_100);
+    client.update_rate(&employer, &id, &5);
+
+    // 100 s at the new 5/s rate => 500 newly accrued.
+    env.ledger().with_mut(|l| l.timestamp = 1_200);
+    assert_eq!(client.claimable(&id), 1_500);
+
+    let paid = client.withdraw(&employee, &id);
+    assert_eq!(paid, 1_500, "withdraw pays banked + newly accrued");
+    assert_eq!(token.balance(&employee), 1_500);
+
+    let s = client.get_stream(&id);
+    assert_eq!(s.withdrawn, 1_500);
+    assert_eq!(s.pending_accrual, 0, "banked amount is consumed on withdraw");
+    assert_eq!(client.claimable(&id), 0);
+}
+
+/// Multiple consecutive rate changes must not double count: the banked
+/// pending_accrual accumulates exactly the claimable at each change.
+#[test]
+fn test_update_rate_multiple_changes_no_double_counting() {
+    let (env, client) = setup();
+    let admin = Address::generate(&env);
+    let employer = Address::generate(&env);
+    let employee = Address::generate(&env);
+    let token_id = setup_token(&env, &employer);
+    let token = paystream_token::TokenContractClient::new(&env, &token_id);
+
+    client.initialize(&admin);
+    env.ledger().with_mut(|l| l.timestamp = 1_000);
+    let id = client.create_stream(&employer, &employee, &token_id, &10_000, &10, &0, &None, &None);
+
+    // 100 s at 10/s => 1_000.
+    env.ledger().with_mut(|l| l.timestamp = 1_100);
+    client.update_rate(&employer, &id, &5);
+    assert_eq!(client.get_stream(&id).pending_accrual, 1_000);
+
+    // 100 s at 5/s => +500 => 1_500 banked.
+    env.ledger().with_mut(|l| l.timestamp = 1_200);
+    client.update_rate(&employer, &id, &2);
+    assert_eq!(client.get_stream(&id).pending_accrual, 1_500);
+
+    // 100 s at 2/s => +200 => 1_700 banked.
+    env.ledger().with_mut(|l| l.timestamp = 1_300);
+    client.update_rate(&employer, &id, &1);
+    assert_eq!(client.get_stream(&id).pending_accrual, 1_700);
+    assert_eq!(client.claimable(&id), 1_700);
+
+    // 100 s at 1/s => +100 => 1_800 total claimable.
+    env.ledger().with_mut(|l| l.timestamp = 1_400);
+    assert_eq!(client.claimable(&id), 1_800);
+
+    let paid = client.withdraw(&employee, &id);
+    assert_eq!(paid, 1_800, "no double counting across multiple changes");
+    assert_eq!(token.balance(&employee), 1_800);
+    assert_eq!(client.get_stream(&id).pending_accrual, 0);
+    assert_eq!(client.claimable(&id), 0);
+}
+
+// ---------------------------------------------------------------------------
 // PROD-20 (#309): stream templates
 // ---------------------------------------------------------------------------
 

@@ -28,6 +28,32 @@ building custom tooling.
 
 ---
 
+## Gas Cost Reference
+
+Measured CPU instruction counts per entrypoint, taken from the CI benchmark job
+(see `benchmarks/baseline.json` and `benchmarks/gas-optimization-report.md`).
+
+| Entrypoint | CPU instructions (approx.) | Notes |
+|---|---|---|
+| `create_stream` | ~1,250,000 | Includes one `token::transfer` cross-contract call |
+| `withdraw` | ~900,000 | Includes one `token::transfer` cross-contract call |
+| `top_up` | ~850,000 | Includes one `token::transfer` cross-contract call |
+| `cancel_stream` | ~1,100,000 | Up to two `token::transfer` calls (employee + employer refund) |
+| `create_streams_batch` | ~1,250,000 + ~700,000 per extra stream | Scales roughly linearly with batch size |
+| `cancel_streams_batch` | ~1,100,000 + ~650,000 per extra stream | Scales roughly linearly with batch size |
+| `claimable` | ~50,000 | Read-only; no cross-contract calls |
+
+> **Caveats:** Values are approximate and **network-dependent** — they were
+> measured on the Soroban local sandbox and will differ on testnet/mainnet due to
+> ledger state, storage TTL, and fee-market conditions. Treat them as relative
+> guidance for budgeting, not exact costs.
+
+> **Refresh policy:** This table is refreshed from the CI benchmark artifacts on
+> each release. If the numbers here disagree with the latest
+> `benchmarks/gas-optimization-report.md`, the report wins.
+
+---
+
 ## Stream Contract
 
 ### `initialize`
