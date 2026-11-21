@@ -7,6 +7,7 @@ import {
   formatAmount,
   loadEmployeeStreams,
   loadEmployerStreams,
+  NETWORK,
   shortAddr,
   STREAM_CONTRACT_ID,
   withdraw,
@@ -95,7 +96,7 @@ export default function Dashboard() {
         <div>
           <h1>PayStream Dashboard</h1>
           <div className="muted">
-            contract <code>{STREAM_CONTRACT_ID ? shortAddr(STREAM_CONTRACT_ID) : "unset"}</code> · Stellar testnet
+            contract <code>{STREAM_CONTRACT_ID ? shortAddr(STREAM_CONTRACT_ID) : "unset"}</code> · Stellar {NETWORK}
           </div>
         </div>
         <div style={{ display: "flex", gap: 8 }}>
@@ -115,7 +116,7 @@ export default function Dashboard() {
       {!address ? (
         <div className="notice">
           Connect your Freighter wallet to view streams. The dashboard reads streams where the
-          connected account is employer or employee on the configured testnet contract.
+          connected account is employer or employee on the configured {NETWORK} contract.
         </div>
       ) : (
         <>

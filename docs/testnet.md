@@ -15,7 +15,29 @@ This document lists the current PayStream testnet contract addresses, explains h
 
 Network: **Stellar Testnet** (`https://horizon-testnet.stellar.org`)
 RPC URL: `https://soroban-testnet.stellar.org`
+Network passphrase: `Test SDF Network ; September 2015`
 Last deployed: **2026-09-25**
+
+### Selecting testnet in the indexer and dashboard
+
+The indexer and dashboard are network-agnostic and pick their network from the environment:
+
+```bash
+# Indexer
+NETWORK=testnet
+
+# Dashboard
+NEXT_PUBLIC_NETWORK=testnet
+```
+
+With `NETWORK=testnet` / `NEXT_PUBLIC_NETWORK=testnet`, both services use the testnet passphrase (`Test SDF Network ; September 2015`), the testnet RPC URL above, and the contract IDs listed in this document.
+
+At startup, the indexer and API validate their configuration and **refuse to start** if:
+
+- the configured passphrase does not match the selected network, or
+- the configured contract IDs are not valid for the selected network (e.g. mainnet IDs while `NETWORK=testnet`).
+
+See [networks.md](./networks.md) for the full list of per-network settings and how to switch networks.
 
 ---
 

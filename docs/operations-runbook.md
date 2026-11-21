@@ -149,6 +149,82 @@ stellar contract invoke --id "$STREAM_ID" --source "$ADMIN" --network "$NETWORK"
 stellar contract invoke --id "$STREAM_ID" --source "$ADMIN" --network "$NETWORK" -- version
 ```
 
+## 6. Indexer ledger catch-up and historical backfill
+
+The indexer runs in exactly one ingestion mode at a time: **live**, **catch-up**, or **backfill**. Modes never overlap, so the same ledger range is never ingested twice.
+
+### 6.1 Configuration
+
+```bash
+export NETWORK=testnet                  # selects the network profile (see §7)
+export BACKFILL_START_LEDGER=0          # 0 = genesis; set to a ledger number to start later
+```
+
+- `BACKFILL_START_LEDGER=0` replays from genesis.
+- Any other value replays from that ledger (inclusive).
+- The persisted high-water mark (last successfully ingested ledger) is stored by the indexer and survives restarts.
+
+### 6.2 Backfill (from genesis or a configured start ledger)
+
+```bash
+paystream-indexer backfill --start-ledger "$BACKFILL_START_LEDGER"
+```
+
+Backfill ignores the high-water mark and replays the configured range. Use it for new deployments or after a long downtime where the cursor is missing or known to be behind.
+
+### 6.3 Catch-up (resume from high-water mark)
+
+```bash
+paystream-indexer catch-up
+```
+
+Catch-up resumes from the persisted high-water mark and replays forward until it reaches the current ledger, then hands off to live mode. If no cursor exists, it falls back to `BACKFILL_START_LEDGER`.
+
+### 6.4 Observing progress
+
+The indexer logs the current mode and cursor on every batch:
+
+```
+mode=catch-up cursor=1234567 target=1234999
+mode=catch-up cursor=1234999 target=1234999 complete
+```
+
+- `cursor` is the last successfully ingested ledger.
+- `target` is the current network ledger (or the backfill end).
+- `complete` is logged when the range is exhausted and the indexer switches to live mode.
+
+### 6.5 Resuming an interrupted run
+
+If the indexer stops mid-run, restart it with the same command. The cursor is only advanced **after** a batch is successfully ingested, so an interrupted run resumes from the last committed ledger with no gaps and no duplicates. Re-running `backfill` with the same `BACKFILL_START_LEDGER` is safe and idempotent.
+
+### 6.6 Mode exclusivity
+
+Only one ingestion mode runs at a time. Starting `backfill` or `catch-up` while live ingestion is active is refused; stop the live indexer first. This guarantees backfill and live ingestion never overlap or duplicate events.
+
+## 7. Switching networks
+
+The same stack runs against testnet or mainnet with no code changes. Select the network with `NETWORK`; the passphrase, RPC URL, and contract IDs are resolved per network:
+
+```bash
+export NETWORK=mainnet
+export NETWORK_PASSPHRASE="Public Global Stellar Network ; September 2015"
+export RPC_URL=https://mainnet.sorobanrpc.com
+export STREAM_CONTRACT_ID=<MAINNET_STREAM_CONTRACT_ID>
+```
+
+For testnet:
+
+```bash
+export NETWORK=testnet
+export NETWORK_PASSPHRASE="Test SDF Network ; September 2015"
+export RPC_URL=https://soroban-testnet.stellar.org
+export STREAM_CONTRACT_ID=<TESTNET_STREAM_CONTRACT_ID>
+```
+
+- Both the indexer and the API **refuse to start** if `NETWORK_PASSPHRASE` does not match the selected `NETWORK` profile.
+- Contract IDs are validated against the selected network; an ID that does not exist on that network fails startup.
+- Switching networks requires a fresh indexer cursor for that network — run [backfill](#62-backfill-from-genesis-or-a-configured-start-ledger) on first use.
+
 ## Common errors and recovery
 
 | Error | Cause | Recovery |

@@ -166,6 +166,43 @@ Run `claimable` again — it restarts from near `0` and keeps growing.
 
 ---
 
+## Switching networks
+
+The quickstart above targets **testnet**, but the same stack (contracts, indexer,
+API, dashboard) runs against **mainnet** without code changes. The network is
+selected entirely through environment variables:
+
+| Variable | Purpose | Testnet example |
+| --- | --- | --- |
+| `NETWORK` | Network name used by the indexer/API | `testnet` |
+| `NETWORK_PASSPHRASE` | Stellar network passphrase | `Test SDF Network ; September 2015` |
+| `RPC_URL` | Soroban RPC endpoint | `https://soroban-testnet.stellar.org` |
+| `STREAM_CONTRACT_ID` | PayStream contract ID for that network | see [testnet.md](testnet.md#current-contract-ids) |
+
+To switch to mainnet, set the same variables to the mainnet values (see
+[mainnet.md](mainnet.md)) and restart the indexer and API:
+
+```bash
+export NETWORK=mainnet
+export NETWORK_PASSPHRASE="Public Global Stellar Network ; September 2015"
+export RPC_URL=https://soroban-mainnet.stellar.org
+export STREAM_CONTRACT_ID=<MAINNET_STREAM_CONTRACT_ID>
+```
+
+Safety checks:
+
+- **Passphrase mismatch** — the indexer and API verify that `NETWORK_PASSPHRASE`
+  matches the passphrase reported by `RPC_URL` and **refuse to start** if they
+  disagree, so you cannot accidentally index or serve the wrong network.
+- **Contract ID validation** — `STREAM_CONTRACT_ID` (and any other configured
+  contract IDs) are validated against the selected network; IDs that do not
+  exist on that network cause startup to fail with a clear error.
+
+Per-network values (passphrase, RPC URL, contract IDs) are documented in
+[testnet.md](testnet.md) and [mainnet.md](mainnet.md).
+
+---
+
 ## Next steps
 
 - Pause, resume, top up, or cancel the stream: [API Reference](api-reference.md)

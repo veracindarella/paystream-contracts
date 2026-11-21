@@ -384,6 +384,112 @@ function parseV1Event(topic, data) {
 }
 ```
 
+## Indexer Ingestion Contract
+
+Off-chain indexers that consume these events must support three ingestion modes. This section defines the contract between the contracts (event producers) and indexers (event consumers) so that replay, resume and live processing never duplicate or skip events.
+
+### Modes
+
+| Mode | Purpose | Start point |
+|------|---------|-------------|
+| **Backfill** | Populate a fresh indexer (new deployment) or repair a gap | A configurable start ledger (default: genesis / contract deployment ledger) |
+| **Catch-up** | Resume after downtime | The persisted high-water-mark cursor |
+| **Live** | Follow the chain head | The persisted high-water-mark cursor, then stream new ledgers |
+
+Backfill and live modes **must not overlap**: an indexer runs exactly one mode at a time. When backfill or catch-up reaches the chain head, it transitions to live mode from the same cursor (see *Mode transitions* below).
+
+### High-Water-Mark Cursor
+
+The cursor is the indexer's durable progress marker. It is a single record persisted in the indexer's own storage (database, KV store, etc.) — never in the contract.
+
+```
+cursor = {
+  ledger: u32,        // last fully processed ledger sequence
+  eventIndex: u32,    // last processed event index within that ledger
+  schemaVersion: str  // schema version the cursor was written under, e.g. "v1"
+}
+```
+
+Semantics:
+
+- The cursor is **inclusive**: `(ledger, eventIndex)` identifies the last event that was fully applied.
+- The next event to process is the first event strictly after `(ledger, eventIndex)` in ledger order, then event order within the ledger.
+- The cursor is **monotonic**: it only ever moves forward. A reorg or replay that would move it backwards must be treated as an error and surfaced, not silently applied.
+- The cursor is written **only after** the effects of the event are committed (see *Idempotency and ordering*).
+
+### Backfill
+
+Backfill replays events from a configurable start ledger:
+
+1. Read the configured start ledger `L_start` (default: the contract deployment ledger, i.e. genesis for this contract).
+2. Initialize the cursor to `{ ledger: L_start - 1, eventIndex: MAX, schemaVersion: <current> }` so the first event at `L_start` is included.
+3. Fetch ledgers in ascending order, parse events using the schema version routing described in *Indexer Compatibility Guide*, and apply them.
+4. After each ledger's events are committed, advance the cursor to the last processed event of that ledger.
+5. When the cursor reaches the chain head, switch to **live** mode from the same cursor.
+
+Backfill is **resumable**: if the process stops, restarting backfill with the same start ledger resumes from the persisted cursor rather than from `L_start`. To force a full replay, explicitly reset the cursor first.
+
+### Catch-up
+
+Catch-up resumes from the persisted high-water mark:
+
+1. Load the cursor. If none exists, fall back to backfill from the configured start ledger.
+2. Fetch ledgers strictly after `cursor.ledger`, starting at `cursor.eventIndex + 1` within `cursor.ledger`.
+3. Apply and commit events, advancing the cursor as in backfill.
+4. When the cursor reaches the chain head, switch to **live** mode from the same cursor.
+
+Catch-up and backfill share the same apply/commit/cursor-advance loop; they differ only in where the cursor is initialized.
+
+### Live
+
+Live mode follows the chain head:
+
+1. Start from the persisted cursor (after catch-up or backfill has reached the head).
+2. Poll or subscribe for new ledgers; apply events in ledger order.
+3. Advance the cursor after each committed ledger.
+
+Because live mode starts strictly after the cursor, events already applied during backfill/catch-up are never re-applied.
+
+### Mode Transitions
+
+```
+backfill ──(cursor == head)──▶ live
+catch-up ──(cursor == head)──▶ live
+live ──(gap detected / restart)──▶ catch-up
+```
+
+- Only one mode is active at a time; the mode is recorded alongside the cursor so a restart resumes the correct mode.
+- A detected gap (cursor older than the retention window of the event source) triggers catch-up, and if the gap predates the cursor's recoverable range, backfill from the configured start ledger.
+
+### Idempotency and Ordering
+
+To guarantee backfill, catch-up and live modes never duplicate processing:
+
+- **Idempotent event keys.** Derive a deterministic key for every event, e.g. `(ledger, eventIndex)` or `(txHash, eventIndex)`. Applying an event whose key already exists is a no-op. This makes replays safe even if the cursor is lost or reset.
+- **Cursor advanced after commit.** Apply the event's effects and commit them in the same transaction that advances the cursor. If the process crashes between apply and commit, the event is replayed on restart and deduplicated by its key.
+- **Ordered application.** Events are applied in `(ledger, eventIndex)` order. Do not apply events out of order or in parallel within a ledger.
+- **At-least-once delivery.** The pipeline is at-least-once; exactly-once semantics come from the idempotent keys plus the post-commit cursor.
+
+### Replay Across Upgrades
+
+Backfill may replay events emitted under older schema versions. Use the version routing in *Indexer Compatibility Guide*:
+
+- Route each event by `topic[0]` (`"v1"`, `"v2"`, …) to the matching parser; keep parsers for all historical versions.
+- Events emitted without a version prefix (see the v1.0 changelog entry) are matched on `topic[0]` directly.
+- Record the schema version in the cursor so a resume knows which parsers were in use; if the indexer is upgraded to support a newer schema, it may continue from the existing cursor without re-backfilling.
+- Unknown versions must fail gracefully (log and skip or halt) rather than corrupt the cursor.
+
+### Observability
+
+Expose at minimum:
+
+- Current mode (`backfill` / `catch-up` / `live`)
+- Cursor `(ledger, eventIndex, schemaVersion)`
+- Target head ledger and lag (`head - cursor.ledger`)
+- Counters for applied, deduplicated and failed events
+
+These make progress observable and let operators confirm a backfill or catch-up is advancing and resumable.
+
 ## Schema Migration History
 
 | Version | Date | Changes |

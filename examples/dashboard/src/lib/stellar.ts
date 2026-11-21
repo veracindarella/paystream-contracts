@@ -4,7 +4,6 @@
 
 import {
   Contract,
-  Networks,
   TransactionBuilder,
   nativeToScVal,
   rpc,
@@ -18,10 +17,13 @@ import {
   requestAccess,
   signTransaction,
 } from "@stellar/freighter-api";
+import {
+  NETWORK_PASSPHRASE,
+  RPC_URL,
+  STREAM_CONTRACT_ID,
+} from "./network";
 
-const RPC_URL = process.env.NEXT_PUBLIC_RPC_URL || "https://soroban-testnet.stellar.org";
-export const STREAM_CONTRACT_ID = process.env.NEXT_PUBLIC_STREAM_CONTRACT_ID || "";
-export const NETWORK_PASSPHRASE = Networks.TESTNET;
+export { NETWORK_PASSPHRASE, STREAM_CONTRACT_ID };
 
 export const server = new rpc.Server(RPC_URL);
 // Built lazily: `new Contract("")` throws, and this module is also evaluated

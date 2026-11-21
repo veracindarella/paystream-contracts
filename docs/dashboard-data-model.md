@@ -120,6 +120,39 @@ stream_events(id PK, stream_id FK, kind, ledger, timestamp, tx_hash,
 
 employer_daily(employer, token, day, deposited, withdrawn, refunded,
                active_streams, burn_rate, PK(employer, token, day))
+
+ingest_cursor(id PK, mode, start_ledger, last_processed_ledger,
+              high_water_mark, status, updated_at)
 ```
 
 `streams` is refreshed via `get_streams_batch` on each event touching a stream; `stream_events` is an append-only log of the events above; `employer_daily` is a rollup materialised from `stream_events`.
+
+### 5.1 Ingestion Cursor and High-Water Mark
+
+A single `ingest_cursor` row (one per indexer instance / contract) tracks how far event ingestion has progressed. It is the source of truth for resumability.
+
+| Field | Type | Definition |
+|---|---|---|
+| `id` | `PK` | Indexer instance / contract identifier |
+| `mode` | `enum` | `backfill` or `live` (see §5.2) |
+| `start_ledger` | `u32` | Configured first ledger to replay (genesis or an operator-chosen ledger) |
+| `last_processed_ledger` | `u32` | Highest ledger fully ingested and committed; the resume point |
+| `high_water_mark` | `u32` | Latest ledger known to be finalised on-chain; catch-up target |
+| `status` | `enum` | `idle`, `running`, `paused`, `failed`, `caught_up` |
+| `updated_at` | `u64` | Timestamp of the last cursor update |
+
+The cursor is advanced **only after** the events for a ledger range are written and the derived rollups (`employer_daily`) are committed, so a crash mid-batch leaves `last_processed_ledger` at the last consistent boundary. On restart the indexer reads the cursor and resumes from `last_processed_ledger + 1` — no gaps, no duplicates (writes are keyed by `(tx_hash, event index)` and are idempotent).
+
+### 5.2 Backfill vs Catch-Up Modes
+
+- **Backfill** — replays events from `start_ledger` (genesis, or a configured ledger such as the contract's deployment ledger) up to the current high-water mark. Used for new deployments and for rebuilding history after schema changes. This is what populates all `Indexed` fields in §1–§3 (refund totals, creation ledger, low-balance inbox, and every time series).
+- **Catch-up** — resumes from the persisted `last_processed_ledger` and advances toward `high_water_mark`. Used after downtime; it is the same replay loop as backfill but starts at the cursor rather than `start_ledger`.
+- **Live** — follows new ledgers as they finalise once `last_processed_ledger == high_water_mark` (status `caught_up`).
+
+**Backfill and live ingestion are mutually exclusive.** Only one mode runs at a time per cursor; the indexer acquires a lock on the `ingest_cursor` row before switching modes. Live ingestion does not start until backfill/catch-up has reached the high-water mark, so the same ledger range is never processed by two modes concurrently and events are not duplicated.
+
+### 5.3 Progress and Resumability
+
+- Progress is observable: `(last_processed_ledger − start_ledger) / (high_water_mark − start_ledger)` gives a completion ratio, and `status` / `updated_at` expose liveness. These can back a dashboard progress bar or health check.
+- Progress is resumable: stopping the indexer at any point and restarting it continues from `last_processed_ledger + 1` in the recorded `mode`. An operator can also reset `start_ledger` and re-run backfill to rebuild history from scratch.
+- Because `stream_events` is append-only and keyed idempotently, replaying an already-seen ledger range is safe and produces no duplicate rows or double-counted rollups.
