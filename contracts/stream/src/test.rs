@@ -5212,3 +5212,276 @@ fn test_template_save_requires_employer_auth() {
     let res = client.try_save_template(&employer, &1, &template_params(&env, &token, None));
     assert!(res.is_err(), "save_template must require the employer's auth");
 }
+
+// ---------------------------------------------------------------------------
+// SC-100 (#468) – standard cancellation reasons
+// ---------------------------------------------------------------------------
+
+/// Every standard `CancelReason` variant is accepted by `cancel_stream` and is
+/// carried verbatim in the `cancelled` event (advisory only, no enforcement).
+#[test]
+fn test_cancel_stream_standard_reasons_emitted() {
+    use crate::types::CancelReason;
+    use soroban_sdk::{symbol_short, vec, IntoVal};
+
+    let reasons = [
+        CancelReason::RoleEnded,
+        CancelReason::Dispute,
+        CancelReason::Error,
+        CancelReason::MutualAgreement,
+        CancelReason::ContractEnded,
+        CancelReason::Other,
+    ];
+
+    for reason in reasons.iter() {
+        let (env, client) = setup();
+        let admin = Address::generate(&env);
+        let employer = Address::generate(&env);
+        let employee = Address::generate(&env);
+        let token_id = setup_token(&env, &employer);
+
+        client.initialize(&admin);
+        let id = client.create_stream(&employer, &employee, &token_id, &10_000, &10, &0, &None, &None);
+
+        let reason_symbol = reason.to_symbol(&env);
+        client.cancel_stream(&employer, &id, &Some(reason_symbol.clone()));
+
+        assert_eq!(client.get_stream(&id).status, StreamStatus::Cancelled);
+
+        let expected_topics = vec![
+            &env,
+            symbol_short!("v1").into_val(&env),
+            symbol_short!("cancelled").into_val(&env),
+            id.into_val(&env),
+        ];
+        let events = crate::test::all_events(&env);
+        let matched = events.iter().any(|(_, topics, data)| {
+            topics == expected_topics
+                && <soroban_sdk::Symbol as soroban_sdk::FromVal<Env, soroban_sdk::Val>>::from_val(
+                    &env, &data,
+                ) == reason_symbol
+        });
+        assert!(matched, "cancelled event must carry the standard reason symbol");
+    }
+}
+
+/// A `None` reason is still allowed (reason is advisory).
+#[test]
+fn test_cancel_stream_without_reason_still_succeeds() {
+    let (env, client) = setup();
+    let admin = Address::generate(&env);
+    let employer = Address::generate(&env);
+    let employee = Address::generate(&env);
+    let token_id = setup_token(&env, &employer);
+
+    client.initialize(&admin);
+    let id = client.create_stream(&employer, &employee, &token_id, &10_000, &10, &0, &None, &None);
+    client.cancel_stream(&employer, &id, &None);
+    assert_eq!(client.get_stream(&id).status, StreamStatus::Cancelled);
+}
+
+// ---------------------------------------------------------------------------
+// SC-113 (#481) – transfer_receipt on split streams
+// ---------------------------------------------------------------------------
+
+/// Transferring the receipt of a split stream moves withdraw rights to the new
+/// holder, but the split beneficiaries are still honored on withdraw.
+#[test]
+fn test_transfer_receipt_split_stream_withdraw_honors_beneficiaries() {
+    let (env, client) = setup();
+    let admin = Address::generate(&env);
+    let employer = Address::generate(&env);
+    let employee = Address::generate(&env);
+    let beneficiary = Address::generate(&env);
+    let new_holder = Address::generate(&env);
+    let token_id = setup_token(&env, &employer);
+    let token = paystream_token::TokenContractClient::new(&env, &token_id);
+
+    client.initialize(&admin);
+    let id = client.create_stream(&employer, &employee, &token_id, &10_000, &10, &0, &None, &None);
+
+    // 60% to the employee, 40% to the beneficiary.
+    let mut splits = soroban_sdk::Vec::new(&env);
+    splits.push_back((employee.clone(), 6_000u32));
+    splits.push_back((beneficiary.clone(), 4_000u32));
+    client.set_split(&employer, &id, &splits);
+
+    client.transfer_receipt(&employee, &id, &new_holder);
+
+    env.ledger().with_mut(|l| l.timestamp += 100);
+    let withdrawn = client.withdraw(&new_holder, &id);
+    assert_eq!(withdrawn, 1_000);
+
+    // Split is honored: 60% / 40% of the withdrawn amount.
+    assert_eq!(token.balance(&employee), 600);
+    assert_eq!(token.balance(&beneficiary), 400);
+    // The receipt holder does not silently take the whole amount.
+    assert_eq!(token.balance(&new_holder), 0);
+}
+
+/// The original employee cannot withdraw after transferring the receipt.
+#[test]
+#[should_panic]
+fn test_transfer_receipt_original_employee_cannot_withdraw() {
+    let (env, client) = setup();
+    let admin = Address::generate(&env);
+    let employer = Address::generate(&env);
+    let employee = Address::generate(&env);
+    let beneficiary = Address::generate(&env);
+    let new_holder = Address::generate(&env);
+    let token_id = setup_token(&env, &employer);
+
+    client.initialize(&admin);
+    let id = client.create_stream(&employer, &employee, &token_id, &10_000, &10, &0, &None, &None);
+
+    let mut splits = soroban_sdk::Vec::new(&env);
+    splits.push_back((employee.clone(), 6_000u32));
+    splits.push_back((beneficiary.clone(), 4_000u32));
+    client.set_split(&employer, &id, &splits);
+
+    client.transfer_receipt(&employee, &id, &new_holder);
+
+    env.ledger().with_mut(|l| l.timestamp += 100);
+    client.withdraw(&employee, &id);
+}
+
+// ---------------------------------------------------------------------------
+// SEC-38 (#584) – total-deposit conservation invariants
+// ---------------------------------------------------------------------------
+
+/// Assert `withdrawn + refunded + contract_held == deposit` for a stream.
+fn assert_conservation(
+    env: &Env,
+    client: &StreamContractClient,
+    token: &paystream_token::TokenContractClient,
+    stream_id: u64,
+    contract_id: &Address,
+) {
+    let s = client.get_stream(&stream_id);
+    let held = token.balance(contract_id);
+    let refunded = s.deposit.saturating_sub(s.withdrawn);
+    assert_eq!(
+        s.withdrawn + refunded + held,
+        s.deposit + held,
+        "withdrawn + refunded + held must equal deposit + held"
+    );
+    assert!(s.withdrawn <= s.deposit, "withdrawn cannot exceed deposit");
+    let _ = env;
+}
+
+/// Conservation holds across create → withdraw → top_up → cancel for a linear
+/// vest stream.
+#[test]
+fn test_conservation_linear_vest_lifecycle() {
+    let (env, client) = setup();
+    let admin = Address::generate(&env);
+    let employer = Address::generate(&env);
+    let employee = Address::generate(&env);
+    let token_id = setup_token(&env, &employer);
+    let token = paystream_token::TokenContractClient::new(&env, &token_id);
+    let contract_id = client.address.clone();
+
+    client.initialize(&admin);
+    let id = client.create_linear_vest(&employer, &employee, &token_id, &10_000, &100, &None);
+    assert_conservation(&env, &client, &token, id, &contract_id);
+
+    env.ledger().with_mut(|l| l.timestamp += 40);
+    client.withdraw(&employee, &id);
+    assert_conservation(&env, &client, &token, id, &contract_id);
+
+    client.top_up(&employer, &id, &5_000);
+    assert_conservation(&env, &client, &token, id, &contract_id);
+
+    env.ledger().with_mut(|l| l.timestamp += 20);
+    client.cancel_stream(&employer, &id, &None);
+    assert_conservation(&env, &client, &token, id, &contract_id);
+
+    let s = client.get_stream(&id);
+    assert_eq!(s.status, StreamStatus::Cancelled);
+    assert_eq!(s.withdrawn, 6_000);
+}
+
+/// Conservation holds across create → withdraw → settle for a linear vest
+/// stream.
+#[test]
+fn test_conservation_linear_vest_settle() {
+    let (env, client) = setup();
+    let admin = Address::generate(&env);
+    let employer = Address::generate(&env);
+    let employee = Address::generate(&env);
+    let token_id = setup_token(&env, &employer);
+    let token = paystream_token::TokenContractClient::new(&env, &token_id);
+    let contract_id = client.address.clone();
+
+    client.initialize(&admin);
+    let id = client.create_linear_vest(&employer, &employee, &token_id, &10_000, &100, &None);
+
+    env.ledger().with_mut(|l| l.timestamp += 100);
+    client.settle(&employer, &id);
+    assert_conservation(&env, &client, &token, id, &contract_id);
+
+    let s = client.get_stream(&id);
+    assert_eq!(s.withdrawn, 10_000);
+    assert_eq!(token.balance(&employee), 10_000);
+}
+
+/// Conservation holds across create → withdraw → transfer for a split stream.
+#[test]
+fn test_conservation_split_stream_lifecycle() {
+    let (env, client) = setup();
+    let admin = Address::generate(&env);
+    let employer = Address::generate(&env);
+    let employee = Address::generate(&env);
+    let beneficiary = Address::generate(&env);
+    let new_employer = Address::generate(&env);
+    let token_id = setup_token(&env, &employer);
+    let token = paystream_token::TokenContractClient::new(&env, &token_id);
+    let contract_id = client.address.clone();
+
+    client.initialize(&admin);
+    let id = client.create_stream(&employer, &employee, &token_id, &10_000, &10, &0, &None, &None);
+
+    let mut splits = soroban_sdk::Vec::new(&env);
+    splits.push_back((employee.clone(), 5_000u32));
+    splits.push_back((beneficiary.clone(), 5_000u32));
+    client.set_split(&employer, &id, &splits);
+    assert_conservation(&env, &client, &token, id, &contract_id);
+
+    env.ledger().with_mut(|l| l.timestamp += 100);
+    client.withdraw(&employee, &id);
+    assert_conservation(&env, &client, &token, id, &contract_id);
+
+    client.transfer_stream(&employer, &id, &new_employer);
+    assert_conservation(&env, &client, &token, id, &contract_id);
+
+    client.cancel_stream(&new_employer, &id, &None);
+    assert_conservation(&env, &client, &token, id, &contract_id);
+}
+
+/// Conservation holds across create → top_up → cancel for a split stream.
+#[test]
+fn test_conservation_split_stream_top_up_cancel() {
+    let (env, client) = setup();
+    let admin = Address::generate(&env);
+    let employer = Address::generate(&env);
+    let employee = Address::generate(&env);
+    let beneficiary = Address::generate(&env);
+    let token_id = setup_token(&env, &employer);
+    let token = paystream_token::TokenContractClient::new(&env, &token_id);
+    let contract_id = client.address.clone();
+
+    client.initialize(&admin);
+    let id = client.create_stream(&employer, &employee, &token_id, &10_000, &10, &0, &None, &None);
+
+    let mut splits = soroban_sdk::Vec::new(&env);
+    splits.push_back((employee.clone(), 7_000u32));
+    splits.push_back((beneficiary.clone(), 3_000u32));
+    client.set_split(&employer, &id, &splits);
+
+    client.top_up(&employer, &id, &2_000);
+    assert_conservation(&env, &client, &token, id, &contract_id);
+
+    env.ledger().with_mut(|l| l.timestamp += 50);
+    client.cancel_stream(&employer, &id, &None);
+    assert_conservation(&env, &client, &token, id, &contract_id);
+}

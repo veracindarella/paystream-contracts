@@ -31,6 +31,7 @@ pub const CONTRACT_VERSION: u32 = 1;
 use storage::{
     set_protocol_fee,
     check_and_increment_create_rate, get_stream_ended_at, load_stream_any, set_split_beneficiaries,
+    get_split_beneficiaries,
     ARCHIVE_WAIT_PERIOD, GRACE_PERIOD, SECONDS_PER_DAY, get_linear_vest_schedule, get_protocol_fee, get_stream_type, linear_vest_claimable_amount, set_linear_vest_schedule, set_stream_ended_at, set_max_creates_per_ledger as store_max_creates,
     accrual_start, claimable_amount, clear_pending_admin, clear_pending_upgrade,
     consume_admin_nonce, delete_template, get_admin, get_admin_nonce, get_auto_topup,
@@ -43,6 +44,41 @@ use storage::{
     set_pending_admin, set_pending_admin_nonce, set_pending_upgrade, set_receipt_owner,
     set_stream_cliff, stream_ids_by_employee, stream_ids_by_employer, TIMELOCK_DELAY,
 };
+/// Standard advisory cancellation reasons (SC-100).
+///
+/// `cancel_stream` accepts an optional `Symbol` reason. These constants define
+/// the recommended standard set so that off-chain reporting and indexers see
+/// consistent values. They are **advisory only** — the contract performs no
+/// validation and records any `Symbol` verbatim. See `docs/events-schema.md`.
+pub mod cancel_reason {
+    use soroban_sdk::{symbol_short, Symbol};
+
+    /// The employee's role or engagement ended.
+    pub fn role_ended() -> Symbol {
+        symbol_short!("role_end")
+    }
+    /// The stream is being cancelled because of a dispute.
+    pub fn dispute() -> Symbol {
+        symbol_short!("dispute")
+    }
+    /// The stream was cancelled due to an operational error.
+    pub fn error() -> Symbol {
+        symbol_short!("error")
+    }
+    /// Funding for the stream stopped.
+    pub fn funding_stopped() -> Symbol {
+        symbol_short!("fund_stop")
+    }
+    /// Both parties agreed to cancel.
+    pub fn mutual_agreement() -> Symbol {
+        symbol_short!("mutual")
+    }
+    /// Any other reason not covered by the standard set.
+    pub fn other() -> Symbol {
+        symbol_short!("other")
+    }
+}
+
 use types::{
     AutoTopupConfig, PendingUpgrade, SplitBeneficiary,
     ERR_ARCHIVE_TOO_EARLY, ERR_BELOW_MIN_DEPOSIT, ERR_INVALID_AUTO_TOPUP, ERR_INVALID_RATE, ERR_NO_AUTO_TOPUP, ERR_NO_PENDING_UPGRADE, ERR_STOP_TIME_PAST, ERR_STREAM_NOT_ENDED, ERR_UPGRADE_TIMELOCK_ACTIVE, ERR_ZERO_RATE,
@@ -81,6 +117,41 @@ fn stream_claimable_amount(env: &Env, stream: &Stream, now: u64) -> i128 {
     match get_linear_vest_schedule(env, stream.id) {
         Some(schedule) => linear_vest_claimable_amount(stream, &schedule, now),
         None => claimable_amount(stream, now),
+    }
+}
+
+/// Transfers `amount` out of escrow to the stream's payees.
+///
+/// For a plain stream the whole amount goes to `recipient` (the receipt
+/// holder). For a split stream (SC-113) the amount is divided across the
+/// configured [`SplitBeneficiary`] set according to basis points; the receipt
+/// holder authorises the withdraw but does not override the split. Any
+/// rounding remainder is paid to the last beneficiary so the full amount is
+/// always distributed and no beneficiary is silently skipped.
+fn payout(env: &Env, stream: &Stream, recipient: &Address, amount: i128) {
+    let token_client = token::Client::new(env, &stream.token);
+    let this = env.current_contract_address();
+    match storage::get_split_beneficiaries(env, stream.id) {
+        Some(beneficiaries) if !beneficiaries.is_empty() => {
+            let mut distributed: i128 = 0;
+            let last_index = beneficiaries.len() - 1;
+            let mut index: u32 = 0;
+            for benef in beneficiaries.iter() {
+                let share = if index == last_index {
+                    amount - distributed
+                } else {
+                    amount * (benef.basis_points as i128) / 10_000
+                };
+                if share > 0 {
+                    token_client.transfer(&this, &benef.address, &share);
+                    distributed += share;
+                }
+                index += 1;
+            }
+        }
+        _ => {
+            token_client.transfer(&this, recipient, &amount);
+        }
     }
 }
 
@@ -831,7 +902,10 @@ impl StreamContract {
         }
 
         let token_client = token::Client::new(&env, &stream.token);
-        token_client.transfer(&env.current_contract_address(), &employee, &amount);
+        // SC-113: on a split stream the receipt holder authorises the withdraw
+        // but the payout is distributed across the configured beneficiaries.
+        // `payout` honours the split and never silently skips a beneficiary.
+        payout(&env, &stream, &employee, amount);
         maybe_auto_topup(&env, &mut stream, now);
 
         stream.locked = false;
@@ -928,8 +1002,8 @@ impl StreamContract {
                 stream.status = StreamStatus::Exhausted;
             }
 
-            let token_client = token::Client::new(&env, &stream.token);
-            token_client.transfer(&env.current_contract_address(), &employee, &amount);
+            // SC-113: honour the split configuration for split streams.
+            payout(&env, &stream, &employee, amount);
             maybe_auto_topup(&env, &mut stream, now);
 
             stream.locked = false;
@@ -1397,7 +1471,8 @@ impl StreamContract {
         events::stop_time_updated(&env, stream_id, old_stop_time, new_stop_time);
     }
 
-    /// Employer cancels a stream and reclaims unstreamed funds.    ///
+    /// Employer cancels a stream and reclaims unstreamed funds.
+    ///
     /// The employee receives all tokens earned up to the cancellation time.
     /// The employer is refunded the remaining deposit. Works on both Active
     /// and Paused streams.
@@ -1405,7 +1480,12 @@ impl StreamContract {
     /// # Parameters
     /// - `employer` — must match the stream's employer (requires auth)
     /// - `stream_id` — ID of the stream to cancel
-    /// - `cancel_reason` — optional reason symbol recorded on-chain for auditing
+    /// - `cancel_reason` — optional advisory reason symbol recorded on-chain for
+    ///   auditing and reporting consistency. Callers are encouraged to use one of
+    ///   the standard [`CancelReason`] values (`role_ended`, `dispute`, `error`,
+    ///   `funding_stopped`, `mutual_agreement`, `other`), but this is **advisory
+    ///   only**: no validation is performed and any `Symbol` is accepted and
+    ///   recorded verbatim. See `docs/events-schema.md` for the standard set.
     ///
     /// # Errors
     /// - Panics if stream not found
@@ -1449,7 +1529,9 @@ impl StreamContract {
         set_stream_ended_at(&env, stream_id, now);
         stream.status = StreamStatus::Cancelled;
         save_stream(&env, &stream);
-        events::stream_cancelled(&env, stream_id, claimable, refund);
+        // The reason is advisory: it is recorded on-chain for reporting
+        // consistency but never validated or enforced.
+        events::stream_cancelled(&env, stream_id, claimable, refund, cancel_reason);
     }
 
     /// Employer cancels multiple streams atomically in a single transaction.
@@ -1992,6 +2074,17 @@ impl StreamContract {
 
     /// Transfer a stream's receipt, and with it the right to withdraw future
     /// earnings, from `from` to `to` (PROD-01).
+    ///
+    /// # Split streams (SC-113)
+    ///
+    /// On a split stream the receipt holder is the only address authorised to
+    /// call [`withdraw`], but the earnings split configured at creation time
+    /// (`SplitBeneficiaries`) is **not** changed by a receipt transfer. After
+    /// the transfer, the new holder withdraws and the contract still
+    /// distributes the withdrawn amount across every beneficiary according to
+    /// their basis points. No beneficiary is silently disenfranchised: the
+    /// split configuration is immutable through this entrypoint, and the
+    /// withdrawal path always honours it.
     ///
     /// # Parameters
     /// - `from` — current receipt holder (requires auth)

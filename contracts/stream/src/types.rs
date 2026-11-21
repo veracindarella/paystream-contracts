@@ -16,6 +16,49 @@ pub enum StreamStatus {
     Exhausted,
 }
 
+/// Standard, advisory set of reasons for cancelling a stream.
+///
+/// `cancel_stream` accepts an optional `Symbol` reason. This enum defines the
+/// canonical set of reasons so that off-chain reporting stays consistent.
+///
+/// **Advisory only:** the contract performs no on-chain enforcement or
+/// validation of the reason. Callers may pass any `Symbol`; using one of the
+/// `to_symbol` values below is recommended for consistency.
+///
+/// | Variant      | Symbol       | Meaning                                        |
+/// |--------------|--------------|------------------------------------------------|
+/// | `RoleEnded`  | `role_end`   | Employee's role/engagement ended               |
+/// | `Dispute`    | `dispute`    | Stream cancelled due to a dispute              |
+/// | `Error`      | `error`      | Stream created or configured in error          |
+/// | `Other`      | `other`      | Any other reason not covered above             |
+///
+/// This is a plain enum (not `#[contracttype]`) because it is never stored
+/// on-chain; it only documents the recommended `Symbol` values.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum CancelReason {
+    /// Employee's role or engagement ended.
+    RoleEnded,
+    /// Stream cancelled due to a dispute.
+    Dispute,
+    /// Stream created or configured in error.
+    Error,
+    /// Any other reason not covered by the standard set.
+    Other,
+}
+
+impl CancelReason {
+    /// Maps the reason to its short, canonical `Symbol` for use with
+    /// `cancel_stream`. These values are advisory and not enforced on-chain.
+    pub fn to_symbol(self) -> soroban_sdk::Symbol {
+        match self {
+            CancelReason::RoleEnded => soroban_sdk::Symbol::short("role_end"),
+            CancelReason::Dispute => soroban_sdk::Symbol::short("dispute"),
+            CancelReason::Error => soroban_sdk::Symbol::short("error"),
+            CancelReason::Other => soroban_sdk::Symbol::short("other"),
+        }
+    }
+}
+
 /// Determines how a stream's grant becomes claimable.
 #[contracttype]
 #[derive(Clone, Debug, PartialEq)]

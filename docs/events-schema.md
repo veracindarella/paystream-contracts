@@ -8,6 +8,12 @@ Indexer-facing record of event schema changes. **Process:** any PR that adds, re
 
 Each entry lists the event, the change (added field / renamed topic / removed field) and migration steps for indexers.
 
+### v1.1 (2026-10-04) — advisory cancel reason
+
+| Event | Change | Migration |
+|-------|--------|-----------|
+| `cancelled` | Added optional `reason` (Symbol) at data[2], carrying a standard `CancelReason` value. Advisory only — not enforced on-chain | Treat missing `reason` (events before v1.1) as `"other"` |
+
 ### v1.0 (2026-09-27) — baseline
 
 | Event | Change | Migration |
@@ -133,14 +139,36 @@ Emitted when a stream is cancelled, recording the exact cash-flow split.
 **Data**:
 - `claimable_amount` (i128): Tokens paid to the employee at cancellation time
 - `refund_amount` (i128): Tokens returned to the employer (unstreamed portion)
+- `reason` (Symbol, optional): Standard `CancelReason` value (see below). Advisory only — the contract does not validate or enforce it
 
 **Example**:
+```json
+{
+  "topic": ["v1", "cancelled", 1],
+  "data": [300000, 700000, "role_ended"]
+}
+```
+
+**Example (no reason supplied)**:
 ```json
 {
   "topic": ["v1", "cancelled", 1],
   "data": [300000, 700000]
 }
 ```
+
+#### CancelReason (standard set)
+
+`cancel_stream` accepts an optional `Symbol` reason for reporting consistency. These values are a documented convention only; the contract stores and emits whatever symbol is passed (or none) and performs **no on-chain enforcement**.
+
+| Symbol | Meaning |
+|--------|---------|
+| `role_ended` | Employment/engagement ended normally |
+| `dispute` | Cancelled due to a disagreement between parties |
+| `error` | Cancelled to correct a mistaken stream configuration |
+| `other` | Any other reason (also the assumed value when no reason is emitted) |
+
+Indexers should map unknown symbols to `other` rather than dropping the event.
 
 ---
 
@@ -328,6 +356,8 @@ Emitted when a pending contract upgrade is cancelled.
 | bool | Boolean | `true` or `false` |
 | BytesN<32> | Fixed 32-byte array | `abcd1234...` |
 | StreamStatus enum | Stream status (0-3) | `0`, `1`, `2`, or `3` |
+| Symbol | Short string symbol (max 32 chars) | `role_ended` |
+| CancelReason | Advisory cancel reason symbol | `role_ended`, `dispute`, `error`, `other` |
 
 ## Indexer Compatibility Guide
 
@@ -389,6 +419,7 @@ function parseV1Event(topic, data) {
 | Version | Date | Changes |
 |---------|------|---------|
 | v1 | 2026-09-27 | Initial schema version |
+| v1.1 | 2026-10-04 | Optional advisory `reason` (Symbol) on `cancelled`; standard `CancelReason` set documented |
 
 ## Testing
 

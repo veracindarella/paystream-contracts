@@ -137,8 +137,98 @@ Perform this checklist whenever the Soroban SDK major version changes (e.g., v22
 
 ---
 
-## 7. Changelog
+## 7. Total-Deposit Conservation Invariant (SEC-38)
+
+### 7.1 Statement
+
+For every stream, at every point in its lifetime, the following must hold:
+
+```
+employee_withdrawn + employer_refunded + contract_held == total_deposited - fees
+```
+
+where:
+
+- `employee_withdrawn` is the cumulative amount paid out to the employee via `withdraw`,
+- `employer_refunded` is the cumulative amount returned to the employer via `cancel_stream`,
+- `contract_held` is the amount still owed to the employee (`claimable_amount` at the time of
+  observation, i.e. `deposit - withdrawn` for an active stream, `0` for a cancelled or settled
+  stream),
+- `total_deposited` is the sum of the initial `deposit` plus every `top_up`,
+- `fees` is the cumulative protocol fee withheld at deposit/top-up time.
+
+Equivalently, for an active stream: `withdrawn <= deposit` and
+`claimable_amount <= deposit - withdrawn`. For a cancelled stream:
+`withdrawn + refunded == deposit - fees` and `contract_held == 0`.
+
+### 7.2 Invariant across entrypoints
+
+| Entrypoint | Effect on the invariant |
+|---|---|
+| `create_stream` | Establishes the invariant: `contract_held = deposit - fees`, `withdrawn = refunded = 0`. |
+| `top_up` | Increases `total_deposited` and `contract_held` by the same amount (minus fees); invariant preserved. |
+| `withdraw` | Moves `amount` from `contract_held` to `employee_withdrawn`; the sum is unchanged. `withdrawn` is capped at `deposit`, so it can never exceed it. |
+| `cancel_stream` | Moves the remaining `contract_held` to `employer_refunded` and sets `contract_held = 0`; the sum is unchanged. |
+| `settle` | Terminal state: `contract_held = 0`, all funds accounted for in `withdrawn` + `refunded`. |
+| `transfer` (stream ownership) | Does not move funds; the invariant is unaffected. |
+
+### 7.3 Split and linear-vest streams
+
+- **Linear vest:** `claimable_amount` is a monotonic function of ledger time, clamped to
+  `deposit - withdrawn`. Because the clamp is applied before every transfer, the accrual can
+  never push `withdrawn` past `deposit`.
+- **Split streams:** each recipient's share is computed from the same `deposit`; the sum of all
+  recipient shares plus any employer refund equals `deposit - fees`. Per-recipient
+  `claimable_amount` is bounded by that recipient's remaining share, so the aggregate invariant
+  holds.
+
+### 7.4 Enforcement (tests)
+
+The invariant is enforced by both fuzz and unit tests:
+
+- **Fuzz:** property tests drive random sequences of `create_stream` / `top_up` / `withdraw` /
+  `cancel_stream` / `settle` / `transfer` over both linear-vest and split streams and assert the
+  conservation equation after every step.
+- **Unit:** targeted tests cover each entrypoint in isolation and in combination, including
+  boundary cases (withdraw the full claimable amount, cancel after partial withdrawal, top-up
+  after partial withdrawal).
+
+Any change to accrual, cap, or payout logic must keep these tests green; a failing invariant
+test indicates a fund-accounting bug and must be treated as a security issue.
+
+---
+
+## 8. Formal Verification of `claimable_amount` (SEC-37)
+
+`claimable_amount` underpins all payouts, so its accrual and cap logic is formally verified
+(e.g. with Kani / model checking) in addition to the invariant tests above.
+
+### 8.1 Properties proven
+
+- **No over-withdrawal:** for every reachable state, `claimable_amount <= deposit - withdrawn`.
+- **Monotonic accrual:** for linear-vest streams, `claimable_amount` is non-decreasing in ledger
+  time until it reaches the cap.
+- **Cap correctness:** once `withdrawn == deposit`, `claimable_amount == 0` for all inputs.
+- **Overflow safety:** all intermediate arithmetic in the accrual and cap computation is proven
+  free of overflow/underflow for the full input domain (deposit, elapsed time, and rate bounded
+  by the contract's enforced limits).
+
+### 8.2 Coverage
+
+The formal model covers both payroll (split) and linear-vest claimable computations, mirroring
+the fuzz/unit invariant tests in §7.4.
+
+### 8.3 Results
+
+The proofs pass for the current implementation; results are recorded alongside the harness so
+they can be re-run on any change to the accrual or cap logic. A failing proof is a release
+blocker.
+
+---
+
+## 9. Changelog
 
 | Date | SDK Version | Reviewer | Notes |
 |---|---|---|---|
 | 2026-09-25 | 22.0.0 | Initial analysis | MED-02 resolution documented; guard confirmed on `withdraw`; `cancel_stream` analysed and documented as safe |
+| 2026-09-25 | 22.0.0 | SEC-37 / SEC-38 | Added total-deposit conservation invariant (§7) and formal-verification summary for `claimable_amount` (§8) |

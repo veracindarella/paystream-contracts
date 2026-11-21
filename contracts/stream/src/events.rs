@@ -39,7 +39,22 @@ pub fn stream_status_changed(env: &Env, id: u64, status: &StreamStatus) {
 ///
 /// - `claimable_amount` — tokens paid to the employee at cancellation time
 /// - `refund_amount`    — tokens returned to the employer (unstreamed portion)
-/// - `cancel_reason`   — optional employer-supplied reason symbol
+/// - `cancel_reason`    — optional employer-supplied reason symbol
+///
+/// # Standard cancel reasons (advisory only)
+///
+/// `cancel_stream` accepts an optional `Symbol` reason. The following standard
+/// set is recommended for reporting/indexing consistency. These are **not**
+/// enforced on-chain — any symbol is accepted — but indexers and dashboards
+/// should treat these as the canonical values:
+///
+/// - `role_ended` — the employee's role or engagement ended normally
+/// - `dispute`    — cancellation due to a disagreement between the parties
+/// - `error`      — the stream was created incorrectly (wrong rate/beneficiary)
+/// - `mutual`     — both parties agreed to cancel
+/// - `other`      — any reason not covered by the standard set
+///
+/// See `docs/events-schema.md` for examples.
 pub fn stream_cancelled(
     env: &Env,
     id: u64,

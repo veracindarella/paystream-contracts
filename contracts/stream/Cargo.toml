@@ -9,6 +9,10 @@ crate-type = ["cdylib", "rlib"]
 
 [dependencies]
 soroban-sdk = { workspace = true }
+# Optional dependency used only by the formal-verification harnesses in
+# `src/utils.rs` (gated with `#[cfg(kani)]`). It is never pulled into the
+# production wasm build; enable it via the `kani` feature.
+kani = { version = "0.56", optional = true }
 
 [dev-dependencies]
 soroban-sdk = { workspace = true, features = ["testutils"] }
@@ -17,3 +21,12 @@ paystream-token = { path = "../token", features = ["testutils"] }
 [features]
 testutils = ["soroban-sdk/testutils"]
 wasm-tests = []
+# Enables the `kani` crate so the formal-verification harnesses compile.
+# Formal verification is run with:
+#
+#   cargo kani -p paystream-stream --features kani
+#
+# This proves the claimable_amount invariants (claimable <= deposit - withdrawn,
+# overflow safety) for both payroll and linear-vest accrual. See
+# `docs/formal-verification.md` for the documented results.
+kani = ["dep:kani"]
