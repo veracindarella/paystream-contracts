@@ -48,7 +48,13 @@ npm run dev                  # http://localhost:3000
 | Variable | Description |
 |---|---|
 | `NEXT_PUBLIC_STREAM_CONTRACT_ID` | Stream contract id from `deploy-testnet.sh`. |
-| `NEXT_PUBLIC_RPC_URL` | Soroban RPC endpoint (default `https://soroban-testnet.stellar.org`). |
+| `NEXT_PUBLIC_RPC_URL` | Soroban RPC endpoint. This also **selects the network**: `https://soroban-testnet.stellar.org` for testnet (default) or `https://soroban.stellar.org` for mainnet. It must match the network passphrase configured in `src/lib/stellar.ts` — a mismatch will cause signature/verification failures. |
+
+## Deployment
+
+For step-by-step hosting instructions (Vercel and self-hosted Node), the full
+environment variable reference, and how to switch between testnet and mainnet,
+see [`docs/dashboard-deployment.md`](../../docs/dashboard-deployment.md).
 
 ## Usage
 

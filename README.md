@@ -11,6 +11,10 @@ Soroban smart contracts for **PayStream** — decentralized payroll and salary s
 PayStream lets employers stream salaries to employees in real-time, per-second. Instead of waiting for a monthly paycheck, employees earn and can withdraw their salary continuously as they work — fully on-chain, trustless, and transparent.
 
 > **New here?** Create your first testnet stream in 5 minutes with the **[Quickstart](docs/quickstart.md)**.
+>
+> **Building an integration?** See the **[Integration Guide](docs/integration-guide.md)** for reading events, calling read queries, and submitting transactions safely.
+>
+> **Deploying the dashboard?** Follow the **[Dashboard Deployment Guide](docs/dashboard-deployment.md)** for Vercel and self-hosted Node setups.
 
 ---
 
@@ -64,7 +68,7 @@ stateDiagram-v2
     Exhausted --> [*]
 ```
 
-See the [glossary](docs/glossary.md) for terms and the [client guide](docs/client-guide.md) for JavaScript integration examples.
+See the [glossary](docs/glossary.md) for terms, the [client guide](docs/client-guide.md) for JavaScript integration examples, and the [integration guide](docs/integration-guide.md) for third-party onboarding (auth, fee estimation, error handling, and the [events schema](docs/events.md)).
 
 ---
 
