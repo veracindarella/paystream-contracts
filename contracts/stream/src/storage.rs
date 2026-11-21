@@ -18,6 +18,26 @@ pub struct EmergencyDrainProposal {
 
 const DRAIN_PROPOSAL_KEY: &str = "drain_proposal";
 
+/// Reconcile the employer index when a stream's employer changes.
+///
+/// Removes `stream_id` from the old employer's index (if present) and adds it
+/// to the new employer's index exactly once. Token and timestamp indexes are
+/// keyed on the stream's token and creation time, which do not change on
+/// transfer, so they are left untouched. Split-stream beneficiary employee
+/// indexes key on the beneficiary (not the employer) and are likewise left
+/// untouched.
+pub fn reindex_employer_transfer(
+    env: &Env,
+    old_employer: &Address,
+    new_employer: &Address,
+    stream_id: u64,
+) {
+    if old_employer != new_employer {
+        crate::remove_stream_id(env, &crate::DataKey::EmployerStreams(old_employer.clone()), stream_id);
+    }
+    crate::add_stream_id(env, &crate::DataKey::EmployerStreams(new_employer.clone()), stream_id);
+}
+
 pub fn set_drain_proposal(env: &Env, proposal: &EmergencyDrainProposal) {
     env.storage().instance().set(&DRAIN_PROPOSAL_KEY, proposal);
 }

@@ -2114,6 +2114,166 @@ fn test_streams_by_employee_paginated_caps_limit_at_50() {
     assert_eq!(page.get(49).unwrap(), 50);
 }
 
+// ---------------------------------------------------------------------------
+// SC-49 (#417) – paginated streams_by_employer query
+// ---------------------------------------------------------------------------
+
+/// Paginated employer query returns the requested page in creation order.
+#[test]
+fn test_streams_by_employer_paginated_pages_and_bounds() {
+    let (env, client) = setup();
+    let admin = Address::generate(&env);
+    let employer = Address::generate(&env);
+    let token_id = setup_token(&env, &employer);
+
+    client.initialize(&admin);
+    for _ in 0..4 {
+        let employee = Address::generate(&env);
+        client.create_stream(&employer, &employee, &token_id, &10_000, &10, &0, &None, &None);
+    }
+
+    let first_page = client.streams_by_employer_paginated(&employer, &None, &2);
+    assert_eq!(first_page.len(), 2);
+    assert_eq!(first_page.get(0).unwrap(), 1);
+    assert_eq!(first_page.get(1).unwrap(), 2);
+
+    let second_page = client.streams_by_employer_paginated(&employer, &Some(2), &2);
+    assert_eq!(second_page.len(), 2);
+    assert_eq!(second_page.get(0).unwrap(), 3);
+    assert_eq!(second_page.get(1).unwrap(), 4);
+
+    let beyond_end = client.streams_by_employer_paginated(&employer, &Some(4), &2);
+    assert!(beyond_end.is_empty());
+}
+
+/// start_after is exclusive: the cursor ID itself is never returned.
+#[test]
+fn test_streams_by_employer_paginated_start_after_is_exclusive() {
+    let (env, client) = setup();
+    let admin = Address::generate(&env);
+    let employer = Address::generate(&env);
+    let token_id = setup_token(&env, &employer);
+
+    client.initialize(&admin);
+    for _ in 0..3 {
+        let employee = Address::generate(&env);
+        client.create_stream(&employer, &employee, &token_id, &10_000, &10, &0, &None, &None);
+    }
+
+    let page = client.streams_by_employer_paginated(&employer, &Some(1), &10);
+    assert_eq!(page.len(), 2);
+    assert_eq!(page.get(0).unwrap(), 2);
+    assert_eq!(page.get(1).unwrap(), 3);
+}
+
+/// The limit is capped at 50 even when a larger limit is requested.
+#[test]
+fn test_streams_by_employer_paginated_caps_limit_at_50() {
+    let (env, client) = setup();
+    let admin = Address::generate(&env);
+    let employer = Address::generate(&env);
+    let token_id = setup_token(&env, &employer);
+
+    client.initialize(&admin);
+    for _ in 0..51 {
+        let employee = Address::generate(&env);
+        client.create_stream(&employer, &employee, &token_id, &10_000, &10, &0, &None, &None);
+    }
+
+    let page = client.streams_by_employer_paginated(&employer, &None, &100);
+    assert_eq!(page.len(), 50);
+    assert_eq!(page.get(49).unwrap(), 50);
+}
+
+/// A zero limit yields an empty page rather than the whole list.
+#[test]
+fn test_streams_by_employer_paginated_zero_limit_returns_empty() {
+    let (env, client) = setup();
+    let admin = Address::generate(&env);
+    let employer = Address::generate(&env);
+    let employee = Address::generate(&env);
+    let token_id = setup_token(&env, &employer);
+
+    client.initialize(&admin);
+    client.create_stream(&employer, &employee, &token_id, &10_000, &10, &0, &None, &None);
+
+    let page = client.streams_by_employer_paginated(&employer, &None, &0);
+    assert!(page.is_empty());
+}
+
+/// Pagination only returns streams owned by the requested employer.
+#[test]
+fn test_streams_by_employer_paginated_isolated_per_employer() {
+    let (env, client) = setup();
+    let admin = Address::generate(&env);
+    let employer_a = Address::generate(&env);
+    let employer_b = Address::generate(&env);
+    let employee = Address::generate(&env);
+    let token_a = setup_token(&env, &employer_a);
+    let token_b = setup_token(&env, &employer_b);
+
+    client.initialize(&admin);
+    client.create_stream(&employer_a, &employee, &token_a, &10_000, &10, &0, &None, &None);
+    client.create_stream(&employer_b, &employee, &token_b, &10_000, &10, &0, &None, &None);
+    client.create_stream(&employer_a, &employee, &token_a, &10_000, &10, &0, &None, &None);
+
+    let page_a = client.streams_by_employer_paginated(&employer_a, &None, &50);
+    assert_eq!(page_a.len(), 2);
+    assert_eq!(page_a.get(0).unwrap(), 1);
+    assert_eq!(page_a.get(1).unwrap(), 3);
+
+    let page_b = client.streams_by_employer_paginated(&employer_b, &None, &50);
+    assert_eq!(page_b.len(), 1);
+    assert_eq!(page_b.get(0).unwrap(), 2);
+}
+
+/// Unknown employer yields an empty page.
+#[test]
+fn test_streams_by_employer_paginated_unknown_employer_returns_empty() {
+    let (env, client) = setup();
+    let admin = Address::generate(&env);
+    let employer = Address::generate(&env);
+    client.initialize(&admin);
+
+    assert!(client
+        .streams_by_employer_paginated(&employer, &None, &50)
+        .is_empty());
+}
+
+/// Walking pages with the cursor reproduces the unbounded list exactly.
+#[test]
+fn test_streams_by_employer_paginated_matches_unbounded_list() {
+    let (env, client) = setup();
+    let admin = Address::generate(&env);
+    let employer = Address::generate(&env);
+    let token_id = setup_token(&env, &employer);
+
+    client.initialize(&admin);
+    for _ in 0..5 {
+        let employee = Address::generate(&env);
+        client.create_stream(&employer, &employee, &token_id, &10_000, &10, &0, &None, &None);
+    }
+
+    let unbounded = client.streams_by_employer(&employer);
+    let mut collected = soroban_sdk::Vec::new(&env);
+    let mut cursor: Option<u64> = None;
+    loop {
+        let page = client.streams_by_employer_paginated(&employer, &cursor, &2);
+        if page.is_empty() {
+            break;
+        }
+        for id in page.iter() {
+            collected.push_back(id);
+        }
+        cursor = Some(page.get(page.len() - 1).unwrap());
+    }
+
+    assert_eq!(collected.len(), unbounded.len());
+    for i in 0..unbounded.len() {
+        assert_eq!(collected.get(i).unwrap(), unbounded.get(i).unwrap());
+    }
+}
+
 /// stream_count_by_token returns 0 for a token with no streams.
 #[test]
 fn test_stream_count_by_token_unknown_token_returns_zero() {
@@ -4895,6 +5055,128 @@ fn test_transfer_stream_new_employer_is_employee_rejected() {
     client.transfer_stream(&employer, &id, &employee);
 }
 
+// ---------------------------------------------------------------------------
+// SC-76 (#444) – transfer_stream index consistency
+// ---------------------------------------------------------------------------
+
+/// Transferring a linear-vest stream keeps employer, token and timestamp
+/// indexes consistent and leaves no orphaned IDs behind.
+#[test]
+fn test_transfer_stream_linear_vest_indexes_consistent() {
+    let (env, client) = setup();
+    let admin = Address::generate(&env);
+    let employer = Address::generate(&env);
+    let new_employer = Address::generate(&env);
+    let employee = Address::generate(&env);
+    let token_id = setup_token(&env, &employer);
+
+    client.initialize(&admin);
+    let id = client.create_linear_vest(&employer, &employee, &token_id, &100_000, &100, &None);
+
+    let token_before = client.stream_count_by_token(&token_id);
+    let employee_before = client.stream_count_by_employee(&employee);
+
+    client.transfer_stream(&employer, &id, &new_employer);
+
+    // Employer index: removed from old, added to new, counts agree.
+    assert!(!client.streams_by_employer(&employer).contains(id));
+    assert!(client.streams_by_employer(&new_employer).contains(id));
+    assert_eq!(client.stream_count_by_employer(&employer), 0);
+    assert_eq!(client.stream_count_by_employer(&new_employer), 1);
+
+    // Token index is untouched by the transfer.
+    assert!(client.stream_ids_by_token(&token_id, &0, &50).contains(id));
+    assert_eq!(client.stream_count_by_token(&token_id), token_before);
+
+    // Employee index is untouched by the transfer.
+    assert!(client.streams_by_employee(&employee).contains(id));
+    assert_eq!(client.stream_count_by_employee(&employee), employee_before);
+
+    // No orphaned IDs: the stream is reachable from exactly one employer.
+    assert_eq!(
+        client
+            .streams_by_employer_paginated(&new_employer, &None, &50)
+            .len(),
+        1
+    );
+    assert!(client
+        .streams_by_employer_paginated(&employer, &None, &50)
+        .is_empty());
+}
+
+/// Transferring a split stream leaves the beneficiary employee indexes intact
+/// (they key on the beneficiary, not the employer).
+#[test]
+fn test_transfer_stream_split_beneficiary_indexes_unaffected() {
+    let (env, client) = setup();
+    let admin = Address::generate(&env);
+    let employer = Address::generate(&env);
+    let new_employer = Address::generate(&env);
+    let beneficiary = Address::generate(&env);
+    let token_id = setup_token(&env, &employer);
+
+    client.initialize(&admin);
+    let id = client.create_split_stream(&employer, &beneficiary, &token_id, &10_000, &10, &0);
+
+    let employee_before = client.stream_count_by_employee(&beneficiary);
+    let token_before = client.stream_count_by_token(&token_id);
+
+    client.transfer_stream(&employer, &id, &new_employer);
+
+    // Beneficiary-side employee index is unaffected by the employer transfer.
+    assert!(client.streams_by_employee(&beneficiary).contains(id));
+    assert_eq!(client.stream_count_by_employee(&beneficiary), employee_before);
+    assert_eq!(client.stream_count_by_token(&token_id), token_before);
+
+    // Employer index moved cleanly.
+    assert!(!client.streams_by_employer(&employer).contains(id));
+    assert!(client.streams_by_employer(&new_employer).contains(id));
+    assert_eq!(client.stream_count_by_employer(&employer), 0);
+    assert_eq!(client.stream_count_by_employer(&new_employer), 1);
+
+    // Stream data itself is unchanged apart from the employer.
+    let s = client.get_stream(&id);
+    assert_eq!(s.employer, new_employer);
+    assert_eq!(s.employee, beneficiary);
+    assert_eq!(s.token, token_id);
+}
+
+/// Transferring one of several streams only moves that ID between employer
+/// indexes; the remaining IDs stay put and no duplicates appear.
+#[test]
+fn test_transfer_stream_partial_indexes_no_orphans() {
+    let (env, client) = setup();
+    let admin = Address::generate(&env);
+    let employer = Address::generate(&env);
+    let new_employer = Address::generate(&env);
+    let employee = Address::generate(&env);
+    let token_id = setup_token(&env, &employer);
+
+    client.initialize(&admin);
+    let id1 = client.create_stream(&employer, &employee, &token_id, &10_000, &10, &0, &None, &None);
+    let id2 = client.create_stream(&employer, &employee, &token_id, &10_000, &10, &0, &None, &None);
+    let id3 = client.create_stream(&employer, &employee, &token_id, &10_000, &10, &0, &None, &None);
+
+    client.transfer_stream(&employer, &id2, &new_employer);
+
+    let old_ids = client.streams_by_employer(&employer);
+    assert_eq!(old_ids.len(), 2);
+    assert!(old_ids.contains(id1));
+    assert!(old_ids.contains(id3));
+    assert!(!old_ids.contains(id2));
+
+    let new_ids = client.streams_by_employer(&new_employer);
+    assert_eq!(new_ids.len(), 1);
+    assert!(new_ids.contains(id2));
+
+    assert_eq!(client.stream_count_by_employer(&employer), 2);
+    assert_eq!(client.stream_count_by_employer(&new_employer), 1);
+
+    // Employee and token indexes still list all three streams.
+    assert_eq!(client.stream_count_by_employee(&employee), 3);
+    assert_eq!(client.stream_count_by_token(&token_id), 3);
+}
+
 /// After transfer, the new employer can pause/resume/cancel the stream.
 #[test]
 fn test_transfer_stream_new_employer_can_manage() {
@@ -5211,4 +5493,117 @@ fn test_template_save_requires_employer_auth() {
     // No mock_all_auths: the employer has not signed.
     let res = client.try_save_template(&employer, &1, &template_params(&env, &token, None));
     assert!(res.is_err(), "save_template must require the employer's auth");
+}
+
+// ---------------------------------------------------------------------------
+// SC-74 (#442) – optional settle_stream keeper allowlist
+// ---------------------------------------------------------------------------
+
+/// Default mode is Open: any caller may settle a stream.
+#[test]
+fn test_settle_stream_open_mode_allows_anyone() {
+    let (env, client) = setup();
+    let admin = Address::generate(&env);
+    let employer = Address::generate(&env);
+    let employee = Address::generate(&env);
+    let stranger = Address::generate(&env);
+    let token_id = setup_token(&env, &employer);
+
+    client.initialize(&admin);
+    let id = client.create_stream(&employer, &employee, &token_id, &10_000, &10, &0, &None, &None);
+
+    env.ledger().with_mut(|l| l.timestamp += 100);
+    // No auth mode set: default is Open, so a random caller can settle.
+    client.settle_stream(&stranger, &id);
+    assert_eq!(client.get_stream(&id).withdrawn, 1000);
+}
+
+/// Switching to Allowlist mode rejects callers that are not allowlisted.
+#[test]
+fn test_settle_stream_allowlist_mode_rejects_non_allowlisted() {
+    let (env, client) = setup();
+    let admin = Address::generate(&env);
+    let employer = Address::generate(&env);
+    let employee = Address::generate(&env);
+    let stranger = Address::generate(&env);
+    let token_id = setup_token(&env, &employer);
+
+    client.initialize(&admin);
+    let id = client.create_stream(&employer, &employee, &token_id, &10_000, &10, &0, &None, &None);
+
+    client.set_settle_auth_mode(&admin, &0, &crate::types::SettleAuthMode::Allowlist);
+
+    env.ledger().with_mut(|l| l.timestamp += 100);
+    let res = client.try_settle_stream(&stranger, &id);
+    assert!(res.is_err(), "non-allowlisted caller must be rejected");
+    assert_eq!(client.get_stream(&id).withdrawn, 0);
+}
+
+/// Allowlisted keepers may settle while in Allowlist mode.
+#[test]
+fn test_settle_stream_allowlist_mode_allows_keeper() {
+    let (env, client) = setup();
+    let admin = Address::generate(&env);
+    let employer = Address::generate(&env);
+    let employee = Address::generate(&env);
+    let keeper = Address::generate(&env);
+    let token_id = setup_token(&env, &employer);
+
+    client.initialize(&admin);
+    let id = client.create_stream(&employer, &employee, &token_id, &10_000, &10, &0, &None, &None);
+
+    client.set_settle_auth_mode(&admin, &0, &crate::types::SettleAuthMode::Allowlist);
+    client.set_settle_keeper(&admin, &1, &keeper, &true);
+
+    env.ledger().with_mut(|l| l.timestamp += 100);
+    client.settle_stream(&keeper, &id);
+    assert_eq!(client.get_stream(&id).withdrawn, 1000);
+}
+
+/// Switching back to Open restores permissionless settlement.
+#[test]
+fn test_settle_stream_switch_back_to_open() {
+    let (env, client) = setup();
+    let admin = Address::generate(&env);
+    let employer = Address::generate(&env);
+    let employee = Address::generate(&env);
+    let stranger = Address::generate(&env);
+    let token_id = setup_token(&env, &employer);
+
+    client.initialize(&admin);
+    let id = client.create_stream(&employer, &employee, &token_id, &10_000, &10, &0, &None, &None);
+
+    client.set_settle_auth_mode(&admin, &0, &crate::types::SettleAuthMode::Allowlist);
+    client.set_settle_auth_mode(&admin, &1, &crate::types::SettleAuthMode::Open);
+
+    env.ledger().with_mut(|l| l.timestamp += 100);
+    client.settle_stream(&stranger, &id);
+    assert_eq!(client.get_stream(&id).withdrawn, 1000);
+}
+
+/// set_settle_auth_mode enforces the admin nonce.
+#[test]
+fn test_set_settle_auth_mode_rejects_stale_nonce() {
+    let (env, client) = setup();
+    let admin = Address::generate(&env);
+    client.initialize(&admin);
+
+    client.set_settle_auth_mode(&admin, &0, &crate::types::SettleAuthMode::Allowlist);
+    // Reusing nonce 0 must fail.
+    let res = client.try_set_settle_auth_mode(&admin, &0, &crate::types::SettleAuthMode::Open);
+    assert!(res.is_err(), "stale nonce must be rejected");
+}
+
+/// set_settle_auth_mode requires the admin's auth.
+#[test]
+fn test_set_settle_auth_mode_requires_admin_auth() {
+    let env = Env::default();
+    let id = env.register(StreamContract, ());
+    let client = StreamContractClient::new(&env, &id);
+    let admin = Address::generate(&env);
+    client.initialize(&admin);
+
+    // No mock_all_auths: the admin has not signed.
+    let res = client.try_set_settle_auth_mode(&admin, &0, &crate::types::SettleAuthMode::Allowlist);
+    assert!(res.is_err(), "set_settle_auth_mode must require admin auth");
 }

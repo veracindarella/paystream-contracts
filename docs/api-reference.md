@@ -1404,6 +1404,92 @@ stellar contract invoke --id <STREAM_ID> --source <ANY_KEY> --network testnet \
 
 ---
 
+## Payroll Reconciliation Report API (BE-13 / #414)
+
+Backend reporting endpoint that returns per-employee withdrawn totals for an
+employer over a bounded date range, for accounting and payroll reconciliation.
+The report is built from the same stream and withdrawal data exposed by the
+Stream contract read functions (`get_stream`, `stream_ids_by_employer`,
+`withdraw` events) and can be exported as CSV.
+
+### `GET /v1/reports/payroll`
+
+| Query parameter | Type | Required | Description |
+|---|---|---|---|
+| `employer` | `Address` | Yes | Employer address whose payroll data is reported. Must be a valid Stellar address. |
+| `from` | `u64` | Yes | Inclusive lower bound of the reporting window (Unix timestamp, seconds). |
+| `to` | `u64` | Yes | Inclusive upper bound of the reporting window (Unix timestamp, seconds). |
+
+**Authorization:** The caller must be authenticated and must be the `employer`
+themselves (or an address explicitly delegated by that employer). Requests for
+another employer's data are rejected with `403 Forbidden`; unauthenticated
+requests return `401 Unauthorized`.
+
+**Validation:**
+- `employer` must parse as a valid address (`400` otherwise).
+- `from` and `to` must be present and numeric (`400` otherwise).
+- `from <= to` (`400` otherwise).
+- `to - from` must not exceed the configured maximum reporting window
+  (`400` otherwise). Windows larger than the maximum must be split into
+  multiple requests.
+
+**Response (JSON):** `200 OK`
+
+```json
+{
+  "employer": "G...",
+  "from": 1714569600,
+  "to": 1717248000,
+  "employees": [
+    {
+      "employee": "G...",
+      "token": "C...",
+      "withdrawn": 1500000,
+      "stream_count": 2
+    }
+  ]
+}
+```
+
+| Field | Type | Description |
+|---|---|---|
+| `employer` | `Address` | Employer the report was generated for |
+| `from` / `to` | `u64` | Effective reporting window (echoed from the request) |
+| `employees[].employee` | `Address` | Employee address |
+| `employees[].token` | `Address` | Token the totals are denominated in |
+| `employees[].withdrawn` | `i128` | Total withdrawn by the employee over the window |
+| `employees[].stream_count` | `u32` | Number of streams contributing to the total |
+
+**CSV export:** Request the same endpoint with `Accept: text/csv` (or
+`?format=csv`). The CSV uses the schema defined in
+`scripts/export-streams.sh`:
+
+```
+id,employee,token,deposit,withdrawn,claimable,status,start_time,stop_time,rate_per_second
+```
+
+One row per stream belonging to `employer` that contributed withdrawals in the
+window. `withdrawn` reflects the amount withdrawn within the window; the other
+columns mirror the corresponding `Stream` fields from `get_stream`.
+
+**Errors:**
+- `400` — invalid `employer`, missing/invalid `from`/`to`, `from > to`, or range exceeds the maximum window
+- `401` — caller is not authenticated
+- `403` — caller is not the requested `employer`
+- `404` — employer has no streams (empty report is returned as `200` with an empty `employees` array; `404` is reserved for unknown routes)
+
+**Example:**
+```bash
+curl -H "Authorization: Bearer $TOKEN" \
+  "https://api.paystream.example/v1/reports/payroll?employer=<EMPLOYER_ADDRESS>&from=1714569600&to=1717248000"
+
+# CSV export
+curl -H "Authorization: Bearer $TOKEN" -H "Accept: text/csv" \
+  "https://api.paystream.example/v1/reports/payroll?employer=<EMPLOYER_ADDRESS>&from=1714569600&to=1717248000"
+```
+
+---
+
 ## Stream Templates (PROD-20)
 
 Templates are saved per employer in persistent storage (TTL extended on every

@@ -2294,8 +2294,42 @@ impl StreamContract {
     ///
     /// # Returns
     /// `Vec<u64>` of stream IDs; empty if the address has no streams.
+    ///
+    /// # Deprecated
+    /// This query returns an unbounded vector and can exhaust instruction
+    /// limits for employers with many streams. Prefer
+    /// [`streams_by_employer_paginated`] (SC-49), which returns a bounded page.
+    #[deprecated(note = "use streams_by_employer_paginated")]
     pub fn stream_ids_by_employer(env: Env, employer: Address) -> Vec<u64> {
         stream_ids_by_employer(&env, &employer)
+    }
+
+    /// Return a page of stream IDs owned by `employer` (SC-49).
+    ///
+    /// Reads the employer's stream index and returns at most `limit` IDs in
+    /// stable creation order, starting strictly after `start_after`. Pass
+    /// `None` for `start_after` to fetch the first page, then pass the last ID
+    /// of the previous page to fetch the next one.
+    ///
+    /// `limit` is capped at 50 and the cap is enforced: values above 50 are
+    /// clamped rather than rejected, so callers cannot request an unbounded
+    /// page. If `start_after` is at or beyond the end of the index, an empty
+    /// vector is returned.
+    ///
+    /// # Parameters
+    /// - `employer` — employer address to query
+    /// - `start_after` — exclusive cursor: only IDs greater than this are returned
+    /// - `limit` — maximum number of IDs to return (capped at 50)
+    ///
+    /// # Returns
+    /// `Vec<u64>` page of stream IDs in creation order.
+    pub fn streams_by_employer_paginated(
+        env: Env,
+        employer: Address,
+        start_after: Option<u64>,
+        limit: u32,
+    ) -> Vec<u64> {
+        storage::stream_ids_by_employer_page(&env, &employer, start_after, limit)
     }
 
     /// Return all stream IDs paying `employee`.
@@ -2310,9 +2344,12 @@ impl StreamContract {
     }
 
     /// Deprecated alias for [`stream_ids_by_employer`].
-    #[deprecated(note = "use stream_ids_by_employer")]
+    ///
+    /// Returns an unbounded vector and can exhaust instruction limits for
+    /// large employers. Prefer [`streams_by_employer_paginated`] (SC-49).
+    #[deprecated(note = "use streams_by_employer_paginated")]
     pub fn streams_by_employer(env: Env, employer: Address) -> Vec<u64> {
-        Self::stream_ids_by_employer(env, employer)
+        stream_ids_by_employer(&env, &employer)
     }
 
     /// Deprecated alias for [`stream_ids_by_employee`].
@@ -2459,7 +2496,7 @@ impl StreamContract {
     /// # Returns
     /// `u64` count; 0 if the address has no streams.
     pub fn stream_count_by_employer(env: Env, employer: Address) -> u64 {
-        stream_ids_by_employer(&env, &employer).len() as u64
+        storage::stream_ids_by_employer_len(&env, &employer) as u64
     }
 
     /// Return the number of streams paying `employee`.

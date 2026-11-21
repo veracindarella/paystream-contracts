@@ -127,6 +127,16 @@ pub struct AutoTopupConfig {
 // was not imported by lib.rs because the types import list did not include it.
 // Alias removed; the struct already exists above.
 
+/// Authorization mode for `settle_stream` callers (#442).
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub enum SettleAuthMode {
+    /// Anyone may call `settle_stream` (default, preserves current behavior).
+    Open,
+    /// Only allowlisted keepers may call `settle_stream`.
+    Allowlist,
+}
+
 /// Pending upgrade proposal for the time-lock upgrade mechanism (SEC-02).
 #[contracttype]
 #[derive(Clone, Debug)]
@@ -208,6 +218,10 @@ pub enum DataKey {
     LastCreateLedger(Address),
     /// Split stream beneficiaries: stream ID → Vec<SplitBeneficiary> for multi-recipient streams (PROD-22).
     SplitBeneficiaries(u64),
+    /// Authorization mode for `settle_stream` callers (#442). Missing means `Open`.
+    SettleAuthMode,
+    /// Allowlisted keeper for `settle_stream` when in Allowlist mode (#442).
+    SettleKeeper(Address),
 }
 
 /// Contract error codes – panic messages reference these names so callers can
@@ -306,6 +320,8 @@ pub const ERR_NOT_RECEIPT_OWNER: &str = "E030: caller does not hold the stream r
 pub const ERR_TEMPLATE_NOT_FOUND: &str = "E031: template not found";
 /// E035: `cliff_time` is after `stop_time` (PROD-17).
 pub const ERR_CLIFF_AFTER_STOP: &str = "E035: cliff_time must be <= stop_time";
+/// E036: caller is not an allowlisted settle keeper (#442).
+pub const ERR_NOT_SETTLE_KEEPER: &str = "E036: caller is not an allowlisted settle keeper";
 /// Maximum number of streams in one batch call (create/cancel/pause/resume).
 pub const MAX_BATCH_SIZE: u32 = 50;
 
