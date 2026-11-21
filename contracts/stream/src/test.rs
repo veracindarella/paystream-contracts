@@ -3224,6 +3224,89 @@ fn test_expire_streams_non_admin_rejected() {
     client.expire_streams(&non_admin, &0, &ids);
 }
 
+/// expire_streams emits a batch summary event with expired/skipped counts,
+/// while per-stream `expired` events are still emitted only for eligible streams.
+#[test]
+fn test_expire_streams_batch_summary_event() {
+    use soroban_sdk::{symbol_short, vec, IntoVal};
+
+    let (env, client) = setup();
+    let admin = Address::generate(&env);
+    let employer = Address::generate(&env);
+    let employee = Address::generate(&env);
+    let token_id = setup_token(&env, &employer);
+
+    client.initialize(&admin);
+    env.ledger().with_mut(|l| l.timestamp = 1_000_000);
+
+    // Eligible stream: stop_time set, grace elapsed, claimable == 0.
+    let stop_time: u64 = 1_000_100;
+    let id_eligible = client.create_stream(&employer, &employee, &token_id, &100, &1, &stop_time, &None, &None);
+
+    // Ineligible: still claimable after stop_time.
+    let id_claimable = client.create_stream(&employer, &employee, &token_id, &10_000, &1, &stop_time, &None, &None);
+
+    // Ineligible: no stop_time.
+    let id_no_stop = client.create_stream(&employer, &employee, &token_id, &10_000, &1, &0, &None, &None);
+
+    // Ineligible: paused stream.
+    let id_paused = client.create_stream(&employer, &employee, &token_id, &100, &1, &stop_time, &None, &None);
+    client.pause_stream(&employer, &id_paused, &None);
+
+    // Clear claimable on the eligible stream only.
+    env.ledger().with_mut(|l| l.timestamp = stop_time + 1);
+    client.withdraw(&employee, &id_eligible);
+
+    // Advance past the grace period.
+    env.ledger().with_mut(|l| l.timestamp = stop_time + 604_801);
+
+    let mut ids = soroban_sdk::Vec::new(&env);
+    ids.push_back(id_eligible);
+    ids.push_back(id_claimable);
+    ids.push_back(id_no_stop);
+    ids.push_back(id_paused);
+    client.expire_streams(&admin, &0, &ids);
+
+    assert_eq!(client.get_stream(&id_eligible).status, StreamStatus::Exhausted);
+    assert_eq!(client.get_stream(&id_claimable).status, StreamStatus::Active);
+    assert_eq!(client.get_stream(&id_no_stop).status, StreamStatus::Active);
+    assert_eq!(client.get_stream(&id_paused).status, StreamStatus::Paused);
+
+    let events = crate::test::all_events(&env);
+
+    // Batch summary event: ("v1", "exp_batch") -> (expired, skipped)
+    let summary_topics = vec![
+        &env,
+        symbol_short!("v1").into_val(&env),
+        symbol_short!("exp_batch").into_val(&env),
+    ];
+    let summary = events
+        .iter()
+        .find(|(_, topics, _)| *topics == summary_topics)
+        .expect("exp_batch summary event not emitted");
+    let (expired, skipped): (u32, u32) =
+        soroban_sdk::FromVal::from_val(&env, &summary.2);
+    assert_eq!((expired, skipped), (1, 3));
+
+    // Per-stream `expired` events only for the eligible stream.
+    let expired_topics = |id: u64| {
+        vec![
+            &env,
+            symbol_short!("v1").into_val(&env),
+            symbol_short!("expired").into_val(&env),
+            id.into_val(&env),
+        ]
+    };
+    assert!(events
+        .iter()
+        .any(|(_, topics, _)| *topics == expired_topics(id_eligible)));
+    for id in [id_claimable, id_no_stop, id_paused] {
+        assert!(!events
+            .iter()
+            .any(|(_, topics, _)| *topics == expired_topics(id)));
+    }
+}
+
 /// expire_streams with still-claimable tokens skips that stream.
 #[test]
 fn test_expire_streams_still_claimable_skipped() {

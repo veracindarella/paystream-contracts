@@ -1711,29 +1711,38 @@ impl StreamContract {
         consume_admin_nonce(&env, nonce);
 
         let now = env.ledger().timestamp();
+        let mut expired: u32 = 0;
+        let mut skipped: u32 = 0;
 
         for stream_id in stream_ids.iter() {
             // Load stream; skip if not found (defensive — IDs are caller-supplied).
             let mut stream = match load_stream(&env, stream_id) {
                 Some(s) => s,
-                None => continue,
+                None => {
+                    skipped += 1;
+                    continue;
+                }
             };
 
             // Eligibility check — skip ineligible streams without reverting.
             // 1. Must have a hard stop_time.
             if stream.stop_time == 0 {
+                skipped += 1;
                 continue;
             }
             // 2. Grace period must have elapsed.
             if now <= stream.stop_time.saturating_add(GRACE_PERIOD) {
+                skipped += 1;
                 continue;
             }
             // 3. Must still be Active (Paused streams could have pending accrual).
             if stream.status != StreamStatus::Active {
+                skipped += 1;
                 continue;
             }
             // 4. No tokens left for the employee to claim.
             if stream_claimable_amount(&env, &stream, now) > 0 {
+                skipped += 1;
                 continue;
             }
 
@@ -1741,7 +1750,10 @@ impl StreamContract {
             stream.status = StreamStatus::Exhausted;
             save_stream(&env, &stream);
             events::stream_expired(&env, stream_id);
+            expired += 1;
         }
+
+        events::streams_expired_batch(&env, expired, skipped);
     }
 
     /// Read the full state of a stream by ID.

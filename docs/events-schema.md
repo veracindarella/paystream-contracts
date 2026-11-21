@@ -15,6 +15,12 @@ Each entry lists the event, the change (added field / renamed topic / removed fi
 | `init`, `created`, `withdraw`, `status`, `cancelled`, `topup`, `paused`, `rate_upd`, `stop_upd`, `near_exp`, `exp_unres`, `upg_prop`, `upg_exec`, `upg_cncl`, `at_set`, `at_up`, `thresh_up`, `split`, `p_stats` | Baseline: topic prefixed with `"v1"` | None. Match on `topic[0] == "v1"`, then `topic[1]` |
 | `receipt`, `archived`, `expired`, `xfr_strm`, `low_bal` | Baseline: emitted **without** a version prefix | Match on `topic[0]` directly. A future version will add the `"v1"` prefix and list it here |
 
+### v1.1 (2026-10-04) — batch expire summary
+
+| Event | Change | Migration |
+|-------|--------|-----------|
+| `exp_batch` | Added event `streams_expired_batch` (topic `["v1", "exp_batch"]`, data `[expired: u32, skipped: u32]`) | Additive: no existing event, topic or data field changed. Indexers that do not handle `exp_batch` can ignore it; per-stream `expired` events are unchanged |
+
 <!-- Template for new entries:
 ### vX.Y (YYYY-MM-DD)
 | Event | Change | Migration |
@@ -302,6 +308,30 @@ Emitted when a contract upgrade is executed.
 
 ---
 
+### streams_expired_batch
+
+Emitted once at the end of every `expire_streams` call, summarizing the batch.
+`expire_streams` silently skips streams that are not yet eligible to expire; this
+event lets keepers observe how much work the batch actually did. Per-stream
+`expired` events are still emitted for each stream that was expired and are
+unchanged.
+
+**Topic**: `["v1", "exp_batch"]`
+
+**Data**:
+- `expired` (u32): Number of streams expired by this batch
+- `skipped` (u32): Number of streams examined but skipped (not eligible)
+
+**Example**:
+```json
+{
+  "topic": ["v1", "exp_batch"],
+  "data": [3, 7]
+}
+```
+
+---
+
 ### upgrade_cancelled
 
 Emitted when a pending contract upgrade is cancelled.
@@ -325,6 +355,7 @@ Emitted when a pending contract upgrade is cancelled.
 | Address | Stellar address (32 bytes) | `GABCD...` |
 | i128 | Signed 128-bit integer | `1000000` |
 | u64 | Unsigned 64-bit integer | `1234567890` |
+| u32 | Unsigned 32-bit integer | `42` |
 | bool | Boolean | `true` or `false` |
 | BytesN<32> | Fixed 32-byte array | `abcd1234...` |
 | StreamStatus enum | Stream status (0-3) | `0`, `1`, `2`, or `3` |

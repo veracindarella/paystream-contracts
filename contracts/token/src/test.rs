@@ -5,8 +5,8 @@
 extern crate std;
 
 use crate::{TokenContract, TokenContractClient};
-use soroban_sdk::testutils::{Address as _, Ledger};
-use soroban_sdk::{vec, Address, Env, Vec};
+use soroban_sdk::testutils::{Address as _, Events, Ledger};
+use soroban_sdk::{vec, Address, Env, IntoVal, MuxedAddress, Symbol, Val, Vec};
 
 fn setup() -> (Env, TokenContractClient<'static>) {
     let env = Env::default();
@@ -44,6 +44,37 @@ fn test_transfer() {
     client.transfer(&admin, &user, &400);
     assert_eq!(client.balance(&admin), 600);
     assert_eq!(client.balance(&user), 400);
+}
+
+#[test]
+fn test_transfer_to_muxed_recipient() {
+    let (env, client) = setup();
+    let admin = Address::generate(&env);
+    let underlying = Address::generate(&env);
+    let muxed_id: u64 = 42;
+    let muxed = MuxedAddress::new(underlying.clone(), muxed_id);
+    client.initialize(&admin, &1_000);
+
+    client.transfer(&admin, &muxed, &400);
+
+    // Balances are keyed by the underlying address, not the muxed id.
+    assert_eq!(client.balance(&admin), 600);
+    assert_eq!(client.balance(&underlying), 400);
+
+    // The emitted transfer event uses the underlying address in its topics and
+    // carries the muxed id only in the event data.
+    let events = env.events().all();
+    let (_, topics, data) = events.last().unwrap();
+    let expected_topics: Vec<Val> = vec![
+        &env,
+        Symbol::new(&env, "transfer").into_val(&env),
+        admin.clone().into_val(&env),
+        underlying.clone().into_val(&env),
+    ];
+    assert_eq!(topics, expected_topics);
+    let (amount, to_muxed_id): (i128, Option<u64>) = data.into_val(&env);
+    assert_eq!(amount, 400);
+    assert_eq!(to_muxed_id, Some(muxed_id));
 }
 
 #[test]

@@ -20,7 +20,7 @@ MuxedAddress, amount: i128)`), against soroban-sdk 28.0.0.
 | `allowance(from, spender) -> i128` | ✅ | Returns 0 once `expiration_ledger` has passed. Previously returned `(i128, u32)`, which **broke every SEP-41 caller** (e.g. `soroban_sdk::token::Client`) at decode time. The tuple is still available as the non-standard `allowance_with_expiration`. |
 | `approve(from, spender, amount, expiration_ledger)` | ✅ | Requires `from` auth. Rejects negative `amount`; rejects `expiration_ledger < current ledger` when `amount > 0`. Extends the temporary allowance entry's TTL to its expiration ledger. Emits `approve`. |
 | `balance(id) -> i128` | ✅ | 0 for unknown addresses. |
-| `transfer(from, to: MuxedAddress, amount)` | ⚠️ | Requires `from` auth; credits the base account of a muxed `to`; emits `transfer` (with `to_muxed_id` when muxed). **Deviation:** `amount == 0` is rejected (`"amount must be positive"`) where SEP-41 only forbids negative amounts — see *Deviations*. |
+| `transfer(from, to: MuxedAddress, amount)` | ⚠️ | Requires `from` auth. Per CAP-67, `to` is a `MuxedAddress`: balances are keyed by the **underlying address** returned by `MuxedAddress::address()`, so a muxed recipient shares the balance of its base account. The muxed id is surfaced **only** in the `transfer` event data as `to_muxed_id` (see *Events*). **Deviation:** `amount == 0` is rejected (`"amount must be positive"`) where SEP-41 only forbids negative amounts — see *Deviations*. |
 | `transfer_from(spender, from, to, amount)` | ⚠️ | Requires `spender` auth; checks expiry, allowance and balance; decrements the allowance; emits `transfer`. Same zero-amount deviation. **Fixed:** negative amounts were previously accepted and moved tokens *to* `from` while increasing the allowance. |
 | `burn(from, amount)` | ⚠️ | Requires `from` auth; reduces balance and total supply; emits `burn`. Same zero-amount deviation. |
 | `burn_from(spender, from, amount)` | ⚠️ | Allowance-checked burn; emits `burn`. Same zero-amount deviation. |
@@ -33,6 +33,20 @@ MuxedAddress, amount: i128)`), against soroban-sdk 28.0.0.
 | SEP-41 event | Topics | Data | Status |
 |---|---|---|---|
 | `transfer` | `["transfer", from: Address, to: Address]` | `amount: i128`, or `{amount: i128, to_muxed_id: u64}` when `to` is muxed | ✅ (emitted by `transfer` and `transfer_from`) |
+
+### CAP-67 muxed addresses
+
+`transfer` accepts a `MuxedAddress` for `to` (CAP-67, Protocol 23). The
+handling is:
+
+- **Balances key on the underlying address.** The contract stores and updates
+  balances under `to.address()` — the base `Address` of the muxed address — so
+  a muxed recipient and its base account are the same balance holder. Muxed
+  ids never appear in storage keys.
+- **Muxed id is event-only.** When `to` is muxed, the `transfer` event's `to`
+  topic is the underlying `Address` and the event data is
+  `{amount: i128, to_muxed_id: u64}`; for a non-muxed `to` the data is the
+  bare `amount: i128`. The muxed id is not persisted anywhere else.
 | `approve` | `["approve", from: Address, spender: Address]` | `[amount: i128, expiration_ledger: u32]` | ✅ |
 | `burn` | `["burn", from: Address]` | `amount: i128` | ✅ (emitted by `burn` and `burn_from`) |
 | `mint` (admin interface, not required by SEP-41) | `["mint", to: Address]` | `amount: i128` | ✅ |
@@ -63,7 +77,9 @@ mainnet (this PR does not open issues on the upstream tracker).
 - `contracts/token/src/test.rs` → `mod sep41`: metadata defaults and
   set-once, expired allowance → 0, negative approve / `transfer_from`
   rejected, the exact topics/data of `transfer`, muxed `transfer`, `approve`,
-  `burn` and `mint` events, and a round-trip through
+  `burn` and `mint` events, `test_transfer_to_muxed_recipient` (a transfer to
+  a muxed recipient credits the underlying address and emits `to_muxed_id`),
+  and a round-trip through
   `soroban_sdk::token::TokenClient` (the generic SEP-41 client) to prove the
   ABI decodes under the standard interface.
 - `contracts/token/fuzz` (TOK-19) fuzzes transfer, allowance and mint/burn

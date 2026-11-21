@@ -14,7 +14,9 @@ use crate::storage::{
     get_pending_admin, has_admin, is_paused, set_admin, set_allowance, set_balance,
     set_paused, set_pending_admin, set_total_supply, total_supply,
 };
-use soroban_sdk::{contract, contractimpl, symbol_short, Address, BytesN, Env, Symbol, Vec};
+use soroban_sdk::{
+    contract, contractimpl, symbol_short, Address, BytesN, Env, MuxedAddress, Symbol, Vec,
+};
 
 pub use crate::storage::{TTL_EXTEND_TO, TTL_THRESHOLD};
 

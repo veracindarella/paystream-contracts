@@ -10,6 +10,10 @@ use crate::types::TransferMuxedData;
 use soroban_sdk::{symbol_short, Address, Env};
 
 /// `["transfer", from, to]` → `amount`, or `{amount, to_muxed_id}` for muxed recipients.
+///
+/// `to` is always the underlying (unmuxed) address; the muxed id, when present,
+/// is carried only in the event data so balances remain keyed by the underlying
+/// address (CAP-67 / SEP-41 muxed behavior).
 pub fn transfer(env: &Env, from: &Address, to: &Address, to_muxed_id: Option<u64>, amount: i128) {
     let topics = (symbol_short!("transfer"), from.clone(), to.clone());
     match to_muxed_id {

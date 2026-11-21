@@ -93,6 +93,17 @@ pub fn stream_expired(env: &Env, stream_id: u64) {
         .publish((symbol_short!("expired"), stream_id), ());
 }
 
+/// Emitted once per `expire_streams` call with a summary of the batch.
+///
+/// - `expired` — number of streams transitioned to Exhausted
+/// - `skipped` — number of ineligible streams left untouched
+pub fn streams_expired_batch(env: &Env, expired: u32, skipped: u32) {
+    env.events().publish(
+        (symbol_short!("v1"), symbol_short!("exp_batch")),
+        (expired, skipped),
+    );
+}
+
 /// Emitted by `check_stream_expiry` when an Active stream's `stop_time` is
 /// approaching (within 24 hours / 86400 seconds). No state is changed.
 pub fn stream_near_expiry(env: &Env, stream_id: u64, seconds_remaining: i128) {
