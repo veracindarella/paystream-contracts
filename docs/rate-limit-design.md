@@ -96,10 +96,23 @@ E025 | ERR_RATE_LIMIT_EXCEEDED | Stream creation rate limit exceeded for this le
 - [ ] `DataKey::LastCreateLedger(Address)` and `DataKey::CreateCountThisLedger(Address)` added
 - [ ] `DataKey::MaxCreatesPerLedger` added; default value `50`
 - [ ] `set_max_creates_per_ledger` admin function implemented with nonce protection
-- [ ] `create_stream` and `create_streams_batch` enforce the rate limit per employer
-- [ ] Rate limit resets every ledger (using `env.ledger().sequence()`)
-- [ ] Tests: at-limit succeeds, over-limit panics with E025
+- [x] `create_stream` and `create_streams_batch` enforce the rate limit per employer
+- [x] Rate limit resets every ledger (using `env.ledger().sequence()`)
+- [x] Tests: at-limit succeeds, over-limit panics with E025
 - [ ] API reference updated with new admin function and error code
+
+### Test coverage (SEC-24 / TEST-53)
+
+The SEC-24 rate-limit behaviour is covered by tests in `contracts/stream/src/test.rs`:
+
+- **Limit enforced; excess reverts** — creating up to `MaxCreatesPerLedger` streams succeeds,
+  and the next `create_stream` reverts with `E025` / `ERR_RATE_LIMIT_EXCEEDED`.
+- **Resets next ledger** — after advancing the ledger sequence (via `env.ledger().sequence()`),
+  the employer's counter resets and creation succeeds again.
+- **Batch counts all entries** — `create_streams_batch` counts every entry in the batch against
+  the quota, so a batch that would exceed the limit reverts with `E025` and a batch within the
+  limit increments the counter by `params.len()`.
+- **Snapshot committed** — the ledger snapshot is committed after the rate-limit state updates.
 
 ---
 

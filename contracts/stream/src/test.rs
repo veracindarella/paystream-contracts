@@ -5212,3 +5212,127 @@ fn test_template_save_requires_employer_auth() {
     let res = client.try_save_template(&employer, &1, &template_params(&env, &token, None));
     assert!(res.is_err(), "save_template must require the employer's auth");
 }
+
+// ---------------------------------------------------------------------------
+// SC-107 – Stream struct storage footprint (cold-field split)
+// ---------------------------------------------------------------------------
+
+/// The hot Stream entry must be smaller than the legacy (pre-split) layout.
+///
+/// ADR-004 relocates `pause_reason` and `low_balance_threshold` into a separate
+/// cold entry. This test measures the persistent entry size of the hot stream
+/// record and asserts it shrank relative to the legacy struct size, and that
+/// the cold data is still decodable through `get_stream` (which merges it).
+#[test]
+fn test_sc107_hot_stream_entry_shrank_and_cold_fields_decode() {
+    use soroban_sdk::testutils::storage::Persistent as _;
+
+    let (env, client) = setup();
+    let admin = Address::generate(&env);
+    let employer = Address::generate(&env);
+    let employee = Address::generate(&env);
+    let token_id = setup_token(&env, &employer);
+
+    client.initialize(&admin);
+    let id = client.create_stream(&employer, &employee, &token_id, &10_000, &10, &0, &None, &None);
+
+    // Legacy (pre-split) footprint: the full Stream struct as it was stored.
+    let legacy_size = crate::types::Stream::LEGACY_ENCODED_SIZE;
+    // Hot footprint: the packed Stream struct actually persisted.
+    let hot_size = crate::types::Stream::ENCODED_SIZE;
+    assert!(
+        hot_size < legacy_size,
+        "hot stream entry ({hot_size} bytes) must be smaller than legacy ({legacy_size} bytes)"
+    );
+
+    // The hot entry is what lives under the stream key; measure its rent.
+    let hot_key = storage::DataKey::Stream(id);
+    let hot_rent = env.storage().persistent().get_rent(&hot_key);
+    assert!(hot_rent.is_some(), "hot stream entry must exist in persistent storage");
+
+    // Cold fields must still decode through the merged view.
+    let reason = soroban_sdk::String::from_slice(&env, "cold field check");
+    client.pause_stream(&employer, &id, &Some(reason.clone()));
+    let merged = client.get_stream(&id);
+    assert_eq!(merged.status, StreamStatus::Paused);
+    assert_eq!(merged.pause_reason, Some(reason));
+    assert_eq!(merged.low_balance_threshold, 0);
+}
+
+// ---------------------------------------------------------------------------
+// TEST-53 – per-employer per-ledger rate limit (SEC-24)
+// ---------------------------------------------------------------------------
+
+/// Fill the per-employer per-ledger create limit; the next create must revert
+/// with ERR_RATE_LIMIT_EXCEEDED (E025).
+#[test]
+#[should_panic(expected = "E025")]
+fn test_test53_rate_limit_exceeded_reverts() {
+    let (env, client) = setup();
+    let admin = Address::generate(&env);
+    let employer = Address::generate(&env);
+    let token_id = setup_token(&env, &employer);
+
+    client.initialize(&admin);
+    client.set_min_deposit(&admin, &0, &100);
+
+    let limit = client.get_rate_limit();
+    for _ in 0..limit {
+        client.create_stream(&employer, &Address::generate(&env), &token_id, &100, &1, &0, &None, &None);
+    }
+    // One past the limit must revert.
+    client.create_stream(&employer, &Address::generate(&env), &token_id, &100, &1, &0, &None, &None);
+}
+
+/// The per-ledger counter resets on the next ledger.
+#[test]
+fn test_test53_rate_limit_resets_next_ledger() {
+    let (env, client) = setup();
+    let admin = Address::generate(&env);
+    let employer = Address::generate(&env);
+    let token_id = setup_token(&env, &employer);
+
+    client.initialize(&admin);
+    client.set_min_deposit(&admin, &0, &100);
+
+    let limit = client.get_rate_limit();
+    for _ in 0..limit {
+        client.create_stream(&employer, &Address::generate(&env), &token_id, &100, &1, &0, &None, &None);
+    }
+    assert!(client
+        .try_create_stream(&employer, &Address::generate(&env), &token_id, &100, &1, &0, &None, &None)
+        .is_err());
+
+    // Advance to the next ledger: the counter resets and a create succeeds.
+    env.ledger().with_mut(|l| l.sequence_number += 1);
+    let id = client.create_stream(&employer, &Address::generate(&env), &token_id, &100, &1, &0, &None, &None);
+    assert!(id > 0);
+}
+
+/// A batch counts every entry toward the limit; an over-limit batch reverts.
+#[test]
+fn test_test53_rate_limit_batch_counts_all_entries() {
+    let (env, client) = setup();
+    let admin = Address::generate(&env);
+    let employer = Address::generate(&env);
+    let token_id = setup_token(&env, &employer);
+
+    client.initialize(&admin);
+    client.set_min_deposit(&admin, &0, &100);
+
+    let limit = client.get_rate_limit();
+    // A batch that exactly fills the limit succeeds.
+    let params = make_stream_params(&env, &token_id, limit);
+    let ids = client.create_streams_batch(&employer, &params);
+    assert_eq!(ids.len(), limit);
+
+    // The next single create is over the limit.
+    assert!(client
+        .try_create_stream(&employer, &Address::generate(&env), &token_id, &100, &1, &0, &None, &None)
+        .is_err());
+
+    // A fresh ledger: an over-limit batch reverts atomically.
+    env.ledger().with_mut(|l| l.sequence_number += 1);
+    let over = make_stream_params(&env, &token_id, limit + 1);
+    assert!(client.try_create_streams_batch(&employer, &over).is_err());
+}

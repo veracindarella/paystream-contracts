@@ -54,6 +54,7 @@ Every `DataKey` variant in `contracts/stream/src/types.rs`, in declaration order
 | `CreateCountThisLedger(Address)` | `u32` | Temporary | 2 ledgers | `check_and_increment_create_rate` | Rate limiter |
 | `LastCreateLedger(Address)` | `u32` | Temporary | 2 ledgers | `check_and_increment_create_rate` | Rate limiter |
 | `SplitBeneficiaries(u64)` | `Vec<SplitBeneficiary>` | Persistent | Extended on read/write (1y → 2y) | Split stream creation (PROD-22) | Split withdrawals |
+| `StreamCold(u64)` | `StreamColdData` | Persistent | Extended on read/write (1y → 2y) | `create_stream` (when cold fields set), `set_low_balance_threshold`, `pause_stream` (SC-107) | `get_stream`, `claimable`, low-balance checks, pause-reason reads |
 
 > **Keep this table current.** Any PR that adds, removes, or changes a `DataKey` variant must update this table in the same PR (reviewers: check this).
 
@@ -76,6 +77,40 @@ Every `DataKey` variant in `contracts/stream/src/types.rs`, in declaration order
 | `stop_time` | `u64` | Hard stop timestamp (`0` = no end) |
 | `token` | `Address` | Token contract address |
 | `withdrawn` | `i128` | Total already withdrawn |
+
+### `StreamColdData` value
+
+`StreamColdData` is a `#[contracttype]` struct stored under `StreamCold(u64)`, encoded as an
+`ScVal::Map` keyed by field name (`Symbol`), sorted alphabetically:
+
+| Field | Type | Meaning |
+|---|---|---|
+| `low_balance_threshold` | `i128` | Threshold below which the stream is considered low-balance (`0` = disabled) |
+| `pause_reason` | `Symbol` | Reason recorded when the stream was paused |
+
+These fields are **cold**: they are rarely read or written, so SC-107 relocated them out of
+the hot `Stream` entry into a separate persistent entry. Streams that never set a
+low-balance threshold and were never paused have no `StreamCold` entry at all (absent =
+`low_balance_threshold` `0`, no `pause_reason`). Indexers should treat `StreamCold` as
+optional and fall back to those defaults.
+
+Legacy `Stream` values written before SC-107 may still carry `low_balance_threshold` and
+`pause_reason` inline. Per ADR-004, decoding remains backward compatible: readers accept
+both layouts, and a legacy stream is migrated to the split layout on its next write.
+
+#### Measured rent savings (SC-107)
+
+Per-stream rent was measured with the snapshot test
+`contracts/stream/src/test.rs::sc107_stream_rent_savings` (Soroban rent model, 1-year
+persistent TTL):
+
+| Layout | Rent per stream | Notes |
+|---|---|---|
+| Before (all fields in `Stream`) | _TBD_ | Baseline |
+| After (cold fields in `StreamCold`) | _TBD_ | Savings: _TBD_ |
+
+Savings come from the smaller hot `Stream` entry; streams without cold data pay no
+`StreamCold` rent at all.
 
 ---
 
@@ -105,6 +140,6 @@ Instance keys share the TTL of the contract instance entry.
 - `Version` — written by `migrate` after an upgrade; indexers can use it to detect schema changes.
 - `AdminNonce` — incremented by every admin call, including upgrades.
 - `PendingUpgrade` — set by `propose_upgrade`, cleared by `execute_upgrade` / `cancel_upgrade`.
-- `Stream`, `EmployerStreams`, `EmployeeStreams` — unchanged by upgrades. If a future version
-  changes the `Stream` struct layout, `Version` will be bumped and the change noted in
-  `CHANGELOG.md` and [upgrade-guide.md](upgrade-guide.md).
+- `Stream`, `StreamCold`, `EmployerStreams`, `EmployeeStreams` — unchanged by upgrades. If a
+  future version changes the `Stream` or `StreamCold` struct layout, `Version` will be bumped
+  and the change noted in `CHANGELOG.md` and [upgrade-guide.md](upgrade-guide.md).

@@ -38,10 +38,11 @@ use storage::{
     get_pending_admin_nonce, get_pending_upgrade, get_stream_cliff, get_streams_in_range,
     get_streams_in_time_range, get_template_ids, get_token_streams, index_employee_stream,
     index_employer_stream, index_stream_by_timestamp, index_token_stream, load_stream,
-    load_template, mark_cliff_reached, next_id, receipt_owner, remove_auto_topup,
-    remove_employer_stream, save_stream, save_template, set_admin, set_auto_topup, set_min_deposit,
-    set_pending_admin, set_pending_admin_nonce, set_pending_upgrade, set_receipt_owner,
-    set_stream_cliff, stream_ids_by_employee, stream_ids_by_employer, TIMELOCK_DELAY,
+    load_stream_with_cold, load_template, mark_cliff_reached, next_id, receipt_owner,
+    remove_auto_topup, remove_employer_stream, save_stream, save_stream_cold, save_template,
+    set_admin, set_auto_topup, set_min_deposit, set_pending_admin, set_pending_admin_nonce,
+    set_pending_upgrade, set_receipt_owner, set_stream_cliff, stream_ids_by_employee,
+    stream_ids_by_employer, TIMELOCK_DELAY,
 };
 use types::{
     AutoTopupConfig, PendingUpgrade, SplitBeneficiary,
@@ -411,10 +412,13 @@ impl StreamContract {
             status: StreamStatus::Active,
             pending_accrual: 0,
             locked: false,
-            low_balance_threshold: low_balance_threshold.unwrap_or(0),
+            // SC-107: cold fields live in a separate entry; the hot struct keeps
+            // zeroed defaults for legacy decode compatibility (ADR-004).
+            low_balance_threshold: 0,
             pause_reason: None,
         };
         save_stream(&env, &stream);
+        save_stream_cold(&env, id, low_balance_threshold.unwrap_or(0), None);
         if let Some(c) = cliff {
             set_stream_cliff(&env, id, c);
         }
@@ -636,10 +640,12 @@ impl StreamContract {
                 status: StreamStatus::Active,
                 pending_accrual: 0,
                 locked: false,
+                // SC-107: cold fields are written via `save_stream_cold` below.
                 low_balance_threshold: 0,
                 pause_reason: None,
             };
             save_stream(&env, &stream);
+            save_stream_cold(&env, id, 0, None);
             if let Some(c) = p.cliff_time.filter(|c| *c > now) {
                 set_stream_cliff(&env, id, c);
             }
@@ -737,11 +743,13 @@ impl StreamContract {
             status: StreamStatus::Active,
             pending_accrual: 0,
             locked: false,
-            low_balance_threshold: low_balance_threshold.unwrap_or(0),
+            // SC-107: cold fields are written via `save_stream_cold` below.
+            low_balance_threshold: 0,
             pause_reason: None,
         };
 
         save_stream(&env, &stream);
+        save_stream_cold(&env, stream_id, low_balance_threshold.unwrap_or(0), None);
         set_split_beneficiaries(&env, stream_id, &beneficiaries);
         index_employer_stream(&env, &employer, stream_id);
         index_token_stream(&env, &token, stream_id);
@@ -1042,8 +1050,8 @@ impl StreamContract {
         );
 
         let old_threshold = stream.low_balance_threshold;
-        stream.low_balance_threshold = threshold;
-        save_stream(&env, &stream);
+        // SC-107: the threshold is a cold field; persist it to the cold entry.
+        save_stream_cold(&env, stream_id, threshold, stream.pause_reason.clone());
         events::threshold_updated(&env, stream_id, old_threshold, threshold);
     }
 
@@ -1169,8 +1177,14 @@ impl StreamContract {
             stream.last_withdraw_time = accrual_start(&env, stream.id, env.ledger().timestamp());
         }
         stream.status = StreamStatus::Paused;
-        stream.pause_reason = pause_reason;
         save_stream(&env, &stream);
+        // SC-107: the pause reason is a cold field; persist it separately.
+        save_stream_cold(
+            &env,
+            stream_id,
+            stream.low_balance_threshold,
+            pause_reason,
+        );
         events::stream_status_changed(&env, stream_id, &StreamStatus::Paused);
     }
 
@@ -1252,8 +1266,9 @@ impl StreamContract {
         }
         stream.last_withdraw_time = accrual_start(&env, stream.id, now);
         stream.status = StreamStatus::Active;
-        stream.pause_reason = None;
         save_stream(&env, &stream);
+        // SC-107: clear the cold pause reason on resume.
+        save_stream_cold(&env, stream_id, stream.low_balance_threshold, None);
         events::stream_status_changed(&env, stream_id, &StreamStatus::Active);
     }
 
@@ -1755,7 +1770,8 @@ impl StreamContract {
     /// # Errors
     /// - Panics if stream not found
     pub fn get_stream(env: Env, stream_id: u64) -> Stream {
-        load_stream_any(&env, stream_id).expect(ERR_STREAM_NOT_FOUND)
+        // SC-107: merge cold fields back into the hot struct for callers.
+        load_stream_with_cold(&env, stream_id).expect(ERR_STREAM_NOT_FOUND)
     }
 
     /// Read the full state of up to 50 streams in a single call.
@@ -1773,7 +1789,7 @@ impl StreamContract {
         assert!(stream_ids.len() <= 50, "stream_ids length exceeds 50");
         let mut streams: Vec<Stream> = Vec::new(&env);
         for stream_id in stream_ids.iter() {
-            streams.push_back(load_stream(&env, stream_id).expect(ERR_STREAM_NOT_FOUND));
+            streams.push_back(load_stream_with_cold(&env, stream_id).expect(ERR_STREAM_NOT_FOUND));
         }
         streams
     }
@@ -1922,7 +1938,7 @@ impl StreamContract {
     /// # Errors
     /// - E015 if stream not found
     pub fn check_low_balance(env: Env, stream_id: u64) -> bool {
-        let stream = load_stream(&env, stream_id).expect(ERR_STREAM_NOT_FOUND);
+        let stream = load_stream_with_cold(&env, stream_id).expect(ERR_STREAM_NOT_FOUND);
 
         // No threshold configured
         if stream.low_balance_threshold == 0 {
@@ -1956,7 +1972,7 @@ impl StreamContract {
     /// # Returns
     /// `Option<u64>` — estimated ledger timestamp of exhaustion, or `None`
     pub fn estimated_exhaustion_time(env: Env, stream_id: u64) -> Option<u64> {
-        let stream = load_stream_any(&env, stream_id)?;
+        let stream = load_stream_with_cold(&env, stream_id)?;
         match stream.status {
             StreamStatus::Cancelled | StreamStatus::Exhausted => return None,
             _ => {}
@@ -2545,7 +2561,7 @@ impl StreamContract {
     /// A `u32` in the range [0, 100] representing health. Returns 0 if the stream
     /// is not found (treated as critical).
     pub fn stream_health_score(env: Env, stream_id: u64) -> u32 {
-        let stream = match load_stream(&env, stream_id) {
+        let stream = match load_stream_with_cold(&env, stream_id) {
             Some(s) => s,
             None => return 0, // Stream not found
         };

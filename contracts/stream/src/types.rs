@@ -62,6 +62,21 @@ pub struct Stream {
     pub pause_reason: Option<soroban_sdk::String>,
 }
 
+/// Cold (rarely-read) stream fields relocated out of the hot `Stream` entry
+/// per ADR-004 to reduce per-stream rent.
+///
+/// The hot `Stream` struct keeps these fields for backward-compatible decode of
+/// legacy persisted streams; new writes store the authoritative values here
+/// under `DataKey::StreamCold(stream_id)` while the hot entry carries defaults.
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub struct StreamColdData {
+    /// Remaining-deposit threshold for low-balance events; 0 disables them.
+    pub low_balance_threshold: i128,
+    /// Optional reason for pausing the stream (regulatory compliance and dispute resolution).
+    pub pause_reason: Option<soroban_sdk::String>,
+}
+
 /// Vesting terms stored separately so existing persisted `Stream` values remain decodable.
 #[contracttype]
 #[derive(Clone, Debug, PartialEq)]
@@ -142,6 +157,10 @@ pub struct PendingUpgrade {
 pub enum DataKey {
     /// Persisted stream data keyed by stream ID.
     Stream(u64),
+    /// Cold (rarely-read) stream fields keyed by stream ID (ADR-004).
+    /// Holds `StreamColdData`; the hot `Stream` entry carries defaults for these
+    /// fields so legacy persisted streams remain decodable.
+    StreamCold(u64),
     /// Number of streams created so far.
     StreamCount,
     /// Contract administrator address.
