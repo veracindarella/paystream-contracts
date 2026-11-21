@@ -208,6 +208,9 @@ pub enum DataKey {
     LastCreateLedger(Address),
     /// Split stream beneficiaries: stream ID → Vec<SplitBeneficiary> for multi-recipient streams (PROD-22).
     SplitBeneficiaries(u64),
+    /// Admin-configurable maximum deposit allowed per stream (SC-66).
+    /// Default: 0, meaning unlimited. Stored in instance storage.
+    MaxDeposit,
 }
 
 /// Contract error codes – panic messages reference these names so callers can
@@ -238,9 +241,27 @@ pub enum DataKey {
 /// | E021 | ERR_ADMIN_NOT_SET       | Admin has not been initialised                     |
 /// | E022 | ERR_STOP_TIME_PAST      | `stop_time` must be in the future                  |
 /// | E023 | ERR_AMOUNT_NOT_POSITIVE | Amount must be positive                            |
-/// | E025 | ERR_INVALID_AUTO_TOPUP  | Invalid auto top-up parameters                     |
-/// | E026 | ERR_NO_AUTO_TOPUP       | No auto top-up configured for the stream           |
+/// | E024 | ERR_BAD_PENDING_NONCE   | Invalid pending admin nonce                        |
+/// | E025 | ERR_NO_PENDING_UPGRADE  | No pending upgrade proposal exists                 |
+/// | E026 | ERR_DRAIN_NOT_PAUSED    | Contract must be paused before emergency drain     |
+/// | E027 | ERR_NO_PENDING_DRAIN    | No pending emergency drain proposal exists         |
+/// | E028 | ERR_NEW_EMPLOYER_IS_EMPLOYEE | `new_employer` equals the stream employee     |
 /// | E029 | ERR_BATCH_TOO_LARGE     | Batch contains more than 50 streams                |
+/// | E030 | ERR_NOT_RECEIPT_OWNER   | Caller does not hold the stream receipt            |
+/// | E031 | ERR_TEMPLATE_NOT_FOUND  | Template not found                                 |
+/// | E032 | ERR_STOP_TIME_TOO_FAR   | `stop_time` exceeds the 10-year limit              |
+/// | E033 | ERR_ABOVE_MAX_DEPOSIT   | Deposit exceeds the configured maximum             |
+/// | E034 | ERR_RATE_LIMIT_EXCEEDED | Per-ledger stream creation rate limit exceeded     |
+/// | E035 | ERR_SPLIT_BASIS_INVALID | Split basis points must sum to 10000               |
+/// | E036 | ERR_SPLIT_TOO_FEW       | Split stream must have at least 2 beneficiaries    |
+/// | E037 | ERR_SPLIT_TOO_MANY      | Split stream cannot have more than 20 beneficiaries|
+/// | E038 | ERR_INVALID_STOP_TIME   | `stop_time` precedes `last_withdraw_time`          |
+/// | E039 | ERR_UPGRADE_TIMELOCK_ACTIVE | Upgrade timelock has not yet expired           |
+/// | E040 | ERR_STREAM_NOT_ENDED    | Stream is not cancelled or exhausted               |
+/// | E041 | ERR_NO_AUTO_TOPUP       | No auto top-up configured for the stream           |
+/// | E042 | ERR_INVALID_AUTO_TOPUP  | Invalid auto top-up parameters                     |
+/// | E043 | ERR_ARCHIVE_TOO_EARLY   | Archive waiting period has not elapsed             |
+/// | E044 | ERR_CLIFF_AFTER_STOP    | `cliff_time` is after `stop_time`                  |
 /// Error returned when a payroll rate is zero.
 pub const ERR_ZERO_RATE: &str = "E001: rate_per_second must be greater than zero";
 /// Error returned when a deposit is not positive.
@@ -304,64 +325,67 @@ pub const ERR_BATCH_TOO_LARGE: &str = "E029: batch exceeds the maximum of 50 str
 pub const ERR_NOT_RECEIPT_OWNER: &str = "E030: caller does not hold the stream receipt";
 /// E031: template not found.
 pub const ERR_TEMPLATE_NOT_FOUND: &str = "E031: template not found";
-/// E035: `cliff_time` is after `stop_time` (PROD-17).
-pub const ERR_CLIFF_AFTER_STOP: &str = "E035: cliff_time must be <= stop_time";
+/// E044: `cliff_time` is after `stop_time` (PROD-17).
+pub const ERR_CLIFF_AFTER_STOP: &str = "E044: cliff_time must be <= stop_time";
 /// Maximum number of streams in one batch call (create/cancel/pause/resume).
 pub const MAX_BATCH_SIZE: u32 = 50;
 
-/// E030: stop_time extends beyond 10-year limit from now
-pub const ERR_STOP_TIME_TOO_FAR: &str = "E030: stop_time must not exceed 10 years from now";
+/// E033: deposit exceeds the admin-configured per-stream maximum (SC-66).
+pub const ERR_ABOVE_MAX_DEPOSIT: &str = "E033: deposit exceeds the configured maximum";
+
+/// E032: stop_time extends beyond 10-year limit from now
+pub const ERR_STOP_TIME_TOO_FAR: &str = "E032: stop_time must not exceed 10 years from now";
 
 /// Maximum stop_time window: 10 years in seconds (315,360,000 seconds)
 pub const MAX_STOP_TIME_OFFSET: u64 = 315_360_000;
 
 // Restored from a97bb5d (dropped by a merge).
-/// E030: per-employer, per-ledger stream creation rate limit exceeded.
-pub const ERR_RATE_LIMIT_EXCEEDED: &str = "E030: stream creation rate limit exceeded for this ledger";
+/// E034: per-employer, per-ledger stream creation rate limit exceeded.
+pub const ERR_RATE_LIMIT_EXCEEDED: &str = "E034: stream creation rate limit exceeded for this ledger";
 
 // Restored from a97bb5d (dropped by a merge).
 /// Default maximum number of streams an employer may create in a single ledger.
 pub const DEFAULT_MAX_CREATES_PER_LEDGER: u32 = 50;
 
 // Restored from cf48a49 (dropped by a merge).
-/// E030: split beneficiary basis points must sum to 10000 (100%)
-pub const ERR_SPLIT_BASIS_INVALID: &str = "E030: split beneficiary basis points must sum to 10000";
+/// E035: split beneficiary basis points must sum to 10000 (100%)
+pub const ERR_SPLIT_BASIS_INVALID: &str = "E035: split beneficiary basis points must sum to 10000";
 
 // Restored from cf48a49 (dropped by a merge).
-/// E031: split stream must have at least 2 beneficiaries
-pub const ERR_SPLIT_TOO_FEW: &str = "E031: split stream must have at least 2 beneficiaries";
+/// E036: split stream must have at least 2 beneficiaries
+pub const ERR_SPLIT_TOO_FEW: &str = "E036: split stream must have at least 2 beneficiaries";
 
 // Restored from cf48a49 (dropped by a merge).
-/// E032: split stream cannot have more than 20 beneficiaries
-pub const ERR_SPLIT_TOO_MANY: &str = "E032: split stream cannot have more than 20 beneficiaries";
+/// E037: split stream cannot have more than 20 beneficiaries
+pub const ERR_SPLIT_TOO_MANY: &str = "E037: split stream cannot have more than 20 beneficiaries";
 
 // Restored from cf48a49 (dropped by a merge).
 /// Maximum number of beneficiaries in a split stream.
 pub const MAX_SPLIT_BENEFICIARIES: u32 = 20;
 
 // Restored from c3cb54c (dropped by a merge).
-/// `update_stop_time` would move the stop time before the last withdrawal.
-pub const ERR_INVALID_STOP_TIME: &str = "E030: stop_time precedes last_withdraw_time";
+/// E038: `update_stop_time` would move the stop time before the last withdrawal.
+pub const ERR_INVALID_STOP_TIME: &str = "E038: stop_time precedes last_withdraw_time";
 
 // Restored from a74e8f6 (dropped by a merge).
-/// `execute_upgrade` was called before the timelock expired.
-pub const ERR_UPGRADE_TIMELOCK_ACTIVE: &str = "E034: upgrade timelock has not yet expired";
+/// E039: `execute_upgrade` was called before the timelock expired.
+pub const ERR_UPGRADE_TIMELOCK_ACTIVE: &str = "E039: upgrade timelock has not yet expired";
 
 // Restored from ce6fe77 (dropped by a merge).
-/// `archive_stream` was called on a stream that is still Active or Paused.
-pub const ERR_STREAM_NOT_ENDED: &str = "E030: stream is not cancelled or exhausted";
+/// E040: `archive_stream` was called on a stream that is still Active or Paused.
+pub const ERR_STREAM_NOT_ENDED: &str = "E040: stream is not cancelled or exhausted";
 
 // Restored from a74e8f6 (dropped by a merge).
-/// No auto top-up is configured for the stream.
-pub const ERR_NO_AUTO_TOPUP: &str = "E031: no auto top-up configured for this stream";
+/// E041: no auto top-up is configured for the stream.
+pub const ERR_NO_AUTO_TOPUP: &str = "E041: no auto top-up configured for this stream";
 
 // Restored from a74e8f6 (dropped by a merge).
-/// Auto top-up threshold, amount or cap is not positive / consistent.
-pub const ERR_INVALID_AUTO_TOPUP: &str = "E030: invalid auto top-up parameters";
+/// E042: auto top-up threshold, amount or cap is not positive / consistent.
+pub const ERR_INVALID_AUTO_TOPUP: &str = "E042: invalid auto top-up parameters";
 
 // Restored from ce6fe77 (dropped by a merge).
-/// `archive_stream` was called before `ARCHIVE_WAIT_PERIOD` elapsed.
-pub const ERR_ARCHIVE_TOO_EARLY: &str = "E031: archive waiting period has not elapsed";
+/// E043: `archive_stream` was called before `ARCHIVE_WAIT_PERIOD` elapsed.
+pub const ERR_ARCHIVE_TOO_EARLY: &str = "E043: archive waiting period has not elapsed";
 
 // Restored from 24db2de (dropped by a merge).
 /// Protocol fee configuration. Absent configuration means fees are disabled.

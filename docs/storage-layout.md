@@ -19,6 +19,71 @@ Example: the key for stream `7` is `Vec[ Symbol("Stream"), U64(7) ]`.
 
 ---
 
+## Storage class diagram
+
+Visual map of every `DataKey` variant to its storage class and TTL behavior, grouped by
+class. Source of truth: the `DataKey` enum in `contracts/stream/src/types.rs`.
+
+```mermaid
+flowchart LR
+    subgraph INSTANCE["Instance storage — TTL shared with contract instance"]
+        direction TB
+        I1["Admin: Address"]
+        I2["StreamCount: u64"]
+        I3["MinDeposit: i128"]
+        I4["MaxDeposit: i128"]
+        I5["ProtocolFee: ProtocolFeeConfig"]
+        I6["AdminNonce: u64"]
+        I7["Paused: bool"]
+        I8["PendingAdmin: Address"]
+        I9["PendingAdminNonce: u64"]
+        I10["Version: u32"]
+        I11["PendingDrain: (Address, u64)"]
+        I12["PendingUpgrade: PendingUpgrade"]
+        I13["MaxCreatesPerLedger: u32"]
+    end
+
+    subgraph PERSISTENT["Persistent storage — extended on read/write (TTL_THRESHOLD → TTL_EXTEND_TO, ~1y → ~2y)"]
+        direction TB
+        P1["Stream(u64): Stream"]
+        P2["AutoTopup(u64): AutoTopupConfig"]
+        P3["EmployerStreams(Address): Vec&lt;u64&gt;"]
+        P4["EmployeeStreams(Address): Vec&lt;u64&gt;"]
+        P5["StreamsByTimestamp(u64): Vec&lt;u64&gt;"]
+        P6["TokenStreams(Address): Vec&lt;u64&gt;"]
+        P7["ReceiptOwner(u64): Address"]
+        P8["TemplateIds(Address): Vec&lt;u32&gt;"]
+        P9["Template(Address, u32): StreamParams"]
+        P10["StreamCliff(u64): u64"]
+        P11["CliffReached(u64): bool"]
+        P12["StreamType(u64): StreamType"]
+        P13["LinearVestSchedule(u64): LinearVestSchedule"]
+        P14["SplitBeneficiaries(u64): Vec&lt;SplitBeneficiary&gt;"]
+        P15["StreamEndedAt(u64): u64 — NOT extended (default persistent TTL)"]
+    end
+
+    subgraph TEMPORARY["Temporary storage — 2 ledgers"]
+        direction TB
+        T1["CreateCountThisLedger(Address): u32"]
+        T2["LastCreateLedger(Address): u32"]
+    end
+
+    P1 -. "archive_stream moves entry to temporary" .-> TEMPORARY
+```
+
+**Legend**
+
+| Class | TTL behavior | Rent implications |
+|---|---|---|
+| Instance | Shares the TTL of the contract instance entry; extended whenever the instance is bumped. | Rent is paid once for the instance entry as a whole, not per key; adding instance keys grows the instance entry size and therefore its rent. |
+| Persistent | Extended on read/write from `TTL_THRESHOLD` (`6_307_200` ledgers, ~1y) to `TTL_EXTEND_TO` (`12_614_400` ledgers, ~2y). `StreamEndedAt` is never extended. | Each entry pays rent for its own footprint; entries left untouched past their TTL are archived and must be restored (paying rent again) before on-chain reads succeed. |
+| Temporary | Lives for 2 ledgers, then is dropped automatically. | Cheapest class; rent is negligible and no restore is possible — entries simply vanish and are recreated on demand. |
+
+> **Keep this diagram in sync.** Any PR that adds, removes, or changes a `DataKey` variant in
+> `contracts/stream/src/types.rs` must update this diagram (and the table below) in the same PR.
+
+---
+
 ## Keys
 
 Every `DataKey` variant in `contracts/stream/src/types.rs`, in declaration order.
@@ -30,6 +95,7 @@ Every `DataKey` variant in `contracts/stream/src/types.rs`, in declaration order
 | `Admin` | `Address` | Instance | Instance | `initialize`, `accept_admin` | Every admin entry point |
 | `AutoTopup(u64)` | `AutoTopupConfig` | Persistent | Extended on read/write (1y → 2y) | `set_auto_topup`; removed on disable | `get_auto_topup`, top-up trigger |
 | `MinDeposit` | `i128` | Instance | Instance | `set_min_deposit` | `create_stream` validation (absent = `10_000`) |
+| `MaxDeposit` | `i128` | Instance | Instance | `set_max_deposit` | `create_stream` / `top_up` validation (absent = no cap) |
 | `ProtocolFee` | `ProtocolFeeConfig` | Instance | Instance | `set_protocol_fee` | `create_stream` / `top_up` fee calculation (absent = 0 bps) |
 | `AdminNonce` | `u64` | Instance | Instance | Every nonce-protected admin call | `admin_nonce`, `consume_admin_nonce` |
 | `Paused` | `bool` | Instance | Instance | `pause_contract` / `unpause_contract` | All state-changing entry points (absent = `false`) |

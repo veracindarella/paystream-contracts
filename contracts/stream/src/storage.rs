@@ -36,6 +36,21 @@ pub fn drain_timelock_elapsed(env: &Env, proposal: &EmergencyDrainProposal) -> b
     now.saturating_sub(proposal.proposed_at) >= DRAIN_TIMELOCK_SECONDS
 }
 
+/// Returns the configured per-stream maximum deposit, or `0` (unlimited) when unset.
+pub fn get_max_deposit(env: &Env) -> i128 {
+    env.storage()
+        .instance()
+        .get(&crate::DataKey::MaxDeposit)
+        .unwrap_or(0)
+}
+
+/// Sets the per-stream maximum deposit. A value of `0` disables the cap.
+pub fn set_max_deposit(env: &Env, amount: i128) {
+    env.storage()
+        .instance()
+        .set(&crate::DataKey::MaxDeposit, &amount);
+}
+
 /// Panics with `ERR_VERSION_DOWNGRADE` unless `new_version` is strictly greater
 /// than the stored `DataKey::Version`. Re-applying the same version is rejected.
 pub fn assert_version_upgrade(env: &Env, new_version: u32) {

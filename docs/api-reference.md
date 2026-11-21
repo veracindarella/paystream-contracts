@@ -178,6 +178,33 @@ stellar contract invoke --id <STREAM_ID> --source <ADMIN_KEY> --network testnet 
 
 ---
 
+### `set_max_deposit`
+
+Admin sets the maximum deposit enforced on `create_stream` and `create_streams_batch`. A value of `0` disables the cap (unlimited), which is the default for backward compatibility.
+
+**Caller:** Admin
+
+| Parameter | Type | Description |
+|---|---|---|
+| `admin` | `Address` | Must equal the stored admin |
+| `nonce` | `u64` | Current admin nonce (replay protection) |
+| `amount` | `i128` | New maximum deposit (`0` = unlimited; must be ≥ 0) |
+
+**Returns:** nothing
+
+**Errors:**
+- Panics if `admin` auth fails or does not match stored admin
+- Panics if `nonce` is wrong (E009)
+- Panics if `amount` < 0 (E002)
+
+**Example:**
+```bash
+stellar contract invoke --id <STREAM_ID> --source <ADMIN_KEY> --network testnet \
+  -- set_max_deposit --admin <ADMIN_ADDRESS> --nonce 2 --amount 100000000
+```
+
+---
+
 ### `expire_streams`
 
 Admin batch-expires streams that crossed `stop_time + GRACE_PERIOD` and have no remaining claimable tokens. Ineligible entries are skipped without reverting. The admin nonce is consumed even when every stream is skipped.
@@ -259,6 +286,7 @@ cliff with `get_cliff_time(stream_id) -> Option<u64>`.
 - E035 if `cliff_time` > `stop_time` (when `stop_time` is non-zero)
 - E002 if `deposit` ≤ 0
 - E007 if `deposit` < minimum deposit
+- E036 if `deposit` exceeds the configured maximum deposit (when `set_max_deposit` is non-zero)
 - E001 if `rate_per_second` ≤ 0
 - E008 if `rate_per_second` > 1,000,000,000
 - Panics if `stop_time` is in the past (when non-zero)
@@ -1438,7 +1466,7 @@ employer's template: lookups are keyed by `(employer, template_id)`.
 | `template_id` | `u32` | Template to delete |
 
 Removes the template and drops it from `list_templates`. Streams already
-created from it are unaffected. **Errors:** E031 if no such template exists for
+created from it are unaffected. **Errors:** E032 if no such template exists for
 this employer.
 
 ### `get_template` / `list_templates`
@@ -1960,10 +1988,34 @@ Keep this table in sync with that file (see [CONTRIBUTING.md](../CONTRIBUTING.md
 | E006 | `ERR_STREAM_EXHAUSTED` | Cannot top up an exhausted stream | `top_up`, `set_low_balance_threshold` | Create a new stream instead |
 | E007 | `ERR_BELOW_MIN_DEPOSIT` | Deposit below minimum | `create_stream`, `create_streams_batch` | Deposit at least the minimum (default `10_000`, changed via `set_min_deposit`) |
 | E008 | `ERR_INVALID_RATE` | `rate_per_second` exceeds maximum (1,000,000,000) | `create_stream`, `create_streams_batch`, `update_rate` | Pass a rate ≤ 1,000,000,000 |
-| E009 | `ERR_BAD_NONCE` | Invalid admin nonce | `propose_admin`, `pause_contract`, `unpause_contract`, `set_min_deposit`, `expire_streams`, `upgrade`, `propose_upgrade`, `execute_upgrade`, `cancel_upgrade` | Read the current value with `admin_nonce` and pass it as `nonce` |
-| E009 | `ERR_BAD_NONCE` | Invalid admin nonce | `propose_admin`, `pause_contract`, `unpause_contract`, `set_min_deposit`, `set_protocol_fee`, `upgrade`, `propose_upgrade`, `execute_upgrade`, `cancel_upgrade` | Read the current value with `admin_nonce` and pass it as `nonce` |
-| E029 | `ERR_BATCH_TOO_LARGE` | Batch contains more than 50 streams | `create_streams_batch`, `cancel_streams_batch` | Split the operation into batches of at most 50 streams |
+| E009 | `ERR_BAD_NONCE` | Invalid admin nonce | `propose_admin`, `pause_contract`, `unpause_contract`, `set_min_deposit`, `set_max_deposit`, `set_protocol_fee`, `expire_streams`, `upgrade`, `propose_upgrade`, `execute_upgrade`, `cancel_upgrade` | Read the current value with `admin_nonce` and pass it as `nonce` |
+| E010 | `ERR_INVALID_SPLIT_BASIS` | Split basis points out of range (must total 10,000) | `create_split_stream`, `update_split` | Pass basis points that sum to exactly 10,000 |
+| E011 | `ERR_RATE_LIMITED` | Operation rate limit exceeded | `withdraw`, `top_up` | Wait for the rate-limit window to elapse and retry |
+| E012 | `ERR_ARCHIVE_NOT_ENDED` | Stream cannot be archived before it ends | `archive_stream` | Wait until the stream reaches a terminal state |
+| E013 | `ERR_INVALID_AUTO_TOPUP` | Auto top-up parameters are invalid | `set_auto_topup` | Ensure `trigger_threshold > 0`, `topup_amount > 0`, and `topup_amount ≤ max_total` |
+| E014 | `ERR_INVALID_CLIFF` | Cliff time is after stop time | `create_stream`, `create_streams_batch` | Pass a `cliff_time` at or before `stop_time` |
+| E015 | `ERR_STREAM_NOT_FOUND` | No stream exists for the given ID | `get_stream`, `withdraw`, `top_up`, and other stream-scoped calls | Verify the `stream_id` with `stream_count` / `stream_ids_by_employer` |
+| E016 | `ERR_INVALID_AMOUNT` | Amount is negative or otherwise invalid | `top_up`, `set_low_balance_threshold` | Pass a non-negative amount |
+| E017 | `ERR_INVALID_STATUS` | Stream is not in the required status | `update_stop_time`, `pause_stream`, `resume_stream` | Check `stream_status` before calling |
+| E018 | `ERR_UNAUTHORIZED` | Caller is not the stream's employer | `top_up`, `pause_stream`, `resume_stream`, `update_rate`, `update_stop_time`, `cancel_stream` | Call from the stream's employer address |
+| E019 | `ERR_ADMIN_NOT_SET` | Contract admin has not been initialised | `admin`, admin-gated calls | Call `initialize` first |
+| E020 | `ERR_ALREADY_INITIALIZED` | Contract has already been initialised | `initialize` | Do not call `initialize` twice |
+| E021 | `ERR_ADMIN_NOT_SET` | Admin lookup before initialisation | `admin` | Call `initialize` first |
+| E022 | `ERR_INVALID_TEMPLATE` | Template parameters are invalid | `save_template` | Provide a valid `StreamParams` |
+| E023 | `ERR_TEMPLATE_NOT_FOUND` | No template exists for this employer and ID | `create_stream_from_template`, `delete_template`, `get_template` | Verify the `template_id` with `list_templates` |
+| E024 | `ERR_INVALID_VEST_PERIOD` | Vesting period is zero or otherwise invalid | `create_linear_vest` | Pass a `vest_period` greater than zero |
+| E025 | `ERR_INVALID_AUTO_TOPUP` | Auto top-up parameters are invalid | `set_auto_topup` | Ensure `trigger_threshold > 0`, `topup_amount > 0`, and `topup_amount ≤ max_total` |
+| E026 | `ERR_AUTO_TOPUP_NOT_SET` | No auto top-up is configured for the stream | `cancel_auto_topup` | Configure auto top-up first with `set_auto_topup` |
+| E027 | `ERR_INVALID_CLIFF` | Cliff duration exceeds vesting period | `create_linear_vest` | Pass a `cliff` at or below `vest_period` |
+| E028 | `ERR_INVALID_TOKEN` | Token address is invalid or unsupported | `create_stream`, `create_streams_batch` | Pass a valid SEP-41 token contract address |
+| E029 | `ERR_BATCH_TOO_LARGE` | Batch contains more than 50 streams | `create_streams_batch`, `cancel_streams_batch`, `pause_stream_batch`, `resume_stream_batch` | Split the operation into batches of at most 50 streams |
 | E030 | `ERR_INVALID_STOP_TIME` | Nonzero stop time precedes last withdrawal | `update_stop_time` | Use 0 or a timestamp at/after `last_withdraw_time` |
+| E031 | `ERR_TEMPLATE_NOT_FOUND` | No template exists for this employer and ID | `create_stream_from_template` | Verify the `template_id` with `list_templates` |
+| E032 | `ERR_TEMPLATE_NOT_FOUND` | No template exists for this employer and ID | `delete_template` | Verify the `template_id` with `list_templates` |
+| E033 | `ERR_INVALID_SPLIT` | Split recipients or shares are invalid | `create_split_stream`, `update_split` | Provide at least one recipient with non-zero shares |
+| E034 | `ERR_SPLIT_NOT_FOUND` | No split configuration exists for the stream | `get_split`, `update_split` | Configure the split first |
+| E035 | `ERR_INVALID_CLIFF` | Cliff time is after stop time | `create_stream`, `create_streams_batch` | Pass a `cliff_time` at or before `stop_time` |
+| E036 | `ERR_ABOVE_MAX_DEPOSIT` | Deposit exceeds the configured maximum deposit | `create_stream`, `create_streams_batch` | Deposit at most the maximum (default unlimited; changed via `set_max_deposit`) |
 | T001 | `ERR_OVERFLOW` (token) | Token arithmetic overflow | Token `mint`, `mint_to_batch`, `transfer`, `transfer_from` | Use smaller amounts |
 | T002 | `ERR_PAUSED` (token) | Token is paused | Token `transfer`, `transfer_from`, `burn`, `burn_from` | Wait for the admin to call `unpause_token` |
 | T003 | `ERR_BATCH_TOO_LARGE` (token) | More than 50 recipients | Token `mint_to_batch` | Split into batches of at most 50 |
