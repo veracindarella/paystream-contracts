@@ -3,8 +3,9 @@
 #![deny(missing_docs)]
 
 use crate::types::{
-    ERR_AMOUNT_NOT_POSITIVE, ERR_BELOW_MIN_DEPOSIT, ERR_CLIFF_AFTER_STOP, ERR_INVALID_RATE, ERR_STOP_TIME_PAST,
-    ERR_ZERO_DEPOSIT, ERR_ZERO_RATE, ERR_STOP_TIME_TOO_FAR, MAX_STOP_TIME_OFFSET,
+    ERR_ABOVE_MAX_DEPOSIT, ERR_AMOUNT_NOT_POSITIVE, ERR_BELOW_MIN_DEPOSIT, ERR_CLIFF_AFTER_STOP,
+    ERR_INVALID_RATE, ERR_STOP_TIME_PAST, ERR_ZERO_DEPOSIT, ERR_ZERO_RATE, ERR_STOP_TIME_TOO_FAR,
+    MAX_STOP_TIME_OFFSET,
 };
 use soroban_sdk::Address;
 
@@ -17,14 +18,16 @@ pub const MAX_RATE_PER_SECOND: i128 = 1_000_000_000_i128;
 /// # Panics
 /// - E002 if `deposit` ≤ 0
 /// - E007 if `deposit` < `min_deposit`
+/// - E033 if `max_deposit` > 0 and `deposit` > `max_deposit`
 /// - E001 if `rate_per_second` ≤ 0
 /// - E008 if `rate_per_second` > MAX_RATE_PER_SECOND
 /// - E022 if `stop_time` is non-zero and in the past
-/// - E030 if `stop_time` exceeds 10-year window from now
+/// - E023 if `stop_time` exceeds 10-year window from now
 /// - if `employer` == `employee`
 pub fn validate_create_stream(
     deposit: i128,
     min_deposit: i128,
+    max_deposit: i128,
     rate_per_second: i128,
     stop_time: u64,
     now: u64,
@@ -33,6 +36,9 @@ pub fn validate_create_stream(
 ) {
     assert!(deposit > 0, "{}", ERR_ZERO_DEPOSIT);
     assert!(deposit >= min_deposit, "{}", ERR_BELOW_MIN_DEPOSIT);
+    if max_deposit > 0 {
+        assert!(deposit <= max_deposit, "{}", ERR_ABOVE_MAX_DEPOSIT);
+    }
     assert!(rate_per_second > 0, "{}", ERR_ZERO_RATE);
     assert!(
         rate_per_second <= MAX_RATE_PER_SECOND,
@@ -54,7 +60,7 @@ pub fn validate_create_stream(
 /// Validate an optional cliff against the stream's stop time (PROD-17).
 ///
 /// # Panics
-/// - E032 if `stop_time` is non-zero and `cliff_time > stop_time`
+/// - E024 if `stop_time` is non-zero and `cliff_time > stop_time`
 pub fn validate_cliff(cliff_time: Option<u64>, stop_time: u64) {
     if let Some(cliff) = cliff_time {
         if stop_time > 0 {
@@ -81,9 +87,9 @@ pub fn validate_rate(rate: i128) {
 /// Validate split stream beneficiary configuration.
 ///
 /// # Panics
-/// - E031 if fewer than 2 beneficiaries
-/// - E032 if more than 20 beneficiaries
-/// - E030 if basis points do not sum to exactly 10000 (100%)
+/// - E025 if fewer than 2 beneficiaries
+/// - E026 if more than 20 beneficiaries
+/// - E027 if basis points do not sum to exactly 10000 (100%)
 pub fn validate_split_beneficiaries(
     beneficiaries: &soroban_sdk::Vec<crate::types::SplitBeneficiary>,
 ) {
