@@ -98,6 +98,81 @@ Instance keys share the TTL of the contract instance entry.
 
 ---
 
+## Claimable caching
+
+`claimable(stream_id)` is a pure function of the stream's stored state and the current
+ledger timestamp, so it is recomputed on every call. Off-chain services (API nodes,
+indexers, dashboards) should cache the result rather than hitting the contract per
+request.
+
+### Cache key
+
+```
+claimable:{stream_id}:{ledger_second_bucket}
+```
+
+- `stream_id` — the `u64` stream ID.
+- `ledger_second_bucket` — the ledger close time (in seconds) truncated to the cache
+  bucket, i.e. `ledger_timestamp / CLAIMABLE_CACHE_BUCKET_SECONDS`. Bucketing keeps the
+  key stable for the whole bucket so concurrent requests within the same second share a
+  single entry.
+
+Because the value is a function of ledger time, entries from different buckets are
+**not** interchangeable: never serve a value computed for one bucket to a request in
+another bucket.
+
+### TTL
+
+Entries are short-lived: `CLAIMABLE_CACHE_TTL_SECONDS` (default **5 s**, roughly one
+ledger). The TTL must be at least the bucket width so a hit within a bucket is
+meaningful, and short enough that a missed invalidation self-heals within one ledger.
+Expired entries are dropped, not refreshed.
+
+### Invalidation
+
+Invalidate **all** buckets for a stream on any state-changing event for that stream:
+
+- `withdraw` (including split withdrawals)
+- `top_up`
+- `pause_stream` / `resume_stream`
+- `cancel_stream`
+- `transfer_stream` / `transfer_receipt` (changes `employee` / receipt owner)
+- `set_auto_topup` and any auto top-up trigger that credits the stream
+- `archive_stream` / restore, and any admin action that mutates the stream
+
+Invalidation is by `stream_id` prefix (`claimable:{stream_id}:*`) so no bucket needs to
+be known at invalidation time. Events are consumed from the contract event stream; the
+cache must also be flushed for a stream when a write to `Stream(stream_id)` is observed
+out of band.
+
+### Stale-on-error fallback
+
+If the contract read fails (RPC error, timeout, archived stream not yet restored), the
+cache **may** serve the most recent non-expired entry for the stream, even if it belongs
+to an earlier bucket. This is a deliberate availability trade-off:
+
+- The fallback is only used for read paths; it must never feed a write, a balance
+  reconciliation, or a payout decision.
+- Fallback responses must be marked (`stale: true` in the API payload) and logged with
+  the stream ID and the age of the served entry.
+- If no non-expired entry exists, the error is propagated — do not synthesize a value.
+- The fallback window is bounded by the TTL above; after expiry the request fails.
+
+### Observability
+
+Expose a cache hit-ratio metric so the effectiveness of the cache is visible:
+
+- `claimable_cache_requests_total{result="hit"|"miss"|"stale"|"error"}`
+- `claimable_cache_hit_ratio` — `hit / (hit + miss + stale)`, computed over a rolling
+  window (e.g. 5 minutes) and exported as a gauge.
+- `claimable_cache_invalidations_total{stream_id}` — invalidation events processed.
+
+A sustained hit ratio near zero indicates the bucket/TTL configuration is too small or
+that invalidation is firing too aggressively; a ratio near 1.0 with stale responses
+indicates the contract read path is failing.
+
+---
+
 ## Keys affected by contract upgrades
 
 `upgrade` / `execute_upgrade` replace the WASM only; all storage is preserved.

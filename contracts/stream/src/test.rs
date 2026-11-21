@@ -65,9 +65,58 @@ fn make_stream_params(env: &Env, token: &Address, count: u32) -> soroban_sdk::Ve
             rate_per_second: 1,
             stop_time: 0,
             cliff_time: None,
+            low_balance_threshold: None,
         });
     }
     params
+}
+
+/// SC-61: batch creation must honor each stream's low_balance_threshold.
+#[test]
+fn test_create_streams_batch_honors_per_stream_low_balance_threshold() {
+    let (env, client) = setup();
+    let admin = Address::generate(&env);
+    let employer = Address::generate(&env);
+    let token_id = setup_token(&env, &employer);
+
+    client.initialize(&admin);
+    client.set_min_deposit(&admin, &0, &100);
+
+    let mut params = soroban_sdk::Vec::new(&env);
+    params.push_back(StreamParams {
+        employee: Address::generate(&env),
+        token: token_id.clone(),
+        deposit: 1_000,
+        rate_per_second: 1,
+        stop_time: 0,
+        cliff_time: None,
+        low_balance_threshold: Some(500),
+    });
+    params.push_back(StreamParams {
+        employee: Address::generate(&env),
+        token: token_id.clone(),
+        deposit: 1_000,
+        rate_per_second: 1,
+        stop_time: 0,
+        cliff_time: None,
+        low_balance_threshold: Some(1_000),
+    });
+    params.push_back(StreamParams {
+        employee: Address::generate(&env),
+        token: token_id.clone(),
+        deposit: 1_000,
+        rate_per_second: 1,
+        stop_time: 0,
+        cliff_time: None,
+        low_balance_threshold: None,
+    });
+
+    let ids = client.create_streams_batch(&employer, &params);
+    assert_eq!(ids.len(), 3);
+
+    assert_eq!(client.get_stream(&ids.get(0).unwrap()).low_balance_threshold, 500);
+    assert_eq!(client.get_stream(&ids.get(1).unwrap()).low_balance_threshold, 1_000);
+    assert_eq!(client.get_stream(&ids.get(2).unwrap()).low_balance_threshold, 0);
 }
 
 // ---------------------------------------------------------------------------
@@ -265,6 +314,7 @@ fn test_protocol_fee_applies_to_batch_stream_creation() {
         rate_per_second: 10,
         stop_time: 0,
             cliff_time: None,
+        low_balance_threshold: None,
     });
     params.push_back(StreamParams {
         employee: Address::generate(&env),
@@ -273,6 +323,7 @@ fn test_protocol_fee_applies_to_batch_stream_creation() {
         rate_per_second: 10,
         stop_time: 0,
             cliff_time: None,
+        low_balance_threshold: None,
     });
 
     client.initialize(&admin);
@@ -2162,6 +2213,7 @@ fn test_stream_count_by_token_multiple_tokens_and_batch() {
         rate_per_second: 10,
         stop_time: 0,
             cliff_time: None,
+        low_balance_threshold: None,
     });
     params.push_back(StreamParams {
         employee: employee3,
@@ -2170,6 +2222,7 @@ fn test_stream_count_by_token_multiple_tokens_and_batch() {
         rate_per_second: 10,
         stop_time: 0,
             cliff_time: None,
+        low_balance_threshold: None,
     });
     client.create_streams_batch(&employer, &params);
 
@@ -5096,6 +5149,7 @@ fn template_params(env: &Env, token: &Address, cliff_time: Option<u64>) -> Strea
         rate_per_second: 5,
         stop_time: 0,
         cliff_time,
+        low_balance_threshold: None,
     }
 }
 

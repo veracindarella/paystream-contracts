@@ -92,6 +92,9 @@ pub struct StreamParams {
     /// starts from `cliff_time` once passed. Must be <= `stop_time` when both
     /// are set.
     pub cliff_time: Option<u64>,
+    /// Optional remaining-deposit threshold for low-balance events. `None`
+    /// (or 0) disables low-balance events for this stream.
+    pub low_balance_threshold: Option<i128>,
 }
 
 /// Single beneficiary in a split stream, with their share in basis points.

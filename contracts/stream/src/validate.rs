@@ -12,6 +12,10 @@ use soroban_sdk::Address;
 /// claimable_amount for any realistic elapsed time up to ~292 years).
 pub const MAX_RATE_PER_SECOND: i128 = 1_000_000_000_i128;
 
+/// Maximum allowed low_balance_threshold (1e30 — well within i128 range and
+/// far above any realistic token supply, while preventing absurd values).
+pub const MAX_LOW_BALANCE_THRESHOLD: i128 = 1_000_000_000_000_000_000_000_000_000_000_i128;
+
 /// Validate stream creation parameters.
 ///
 /// # Panics
@@ -61,6 +65,22 @@ pub fn validate_cliff(cliff_time: Option<u64>, stop_time: u64) {
             assert!(cliff <= stop_time, "{}", ERR_CLIFF_AFTER_STOP);
         }
     }
+}
+
+/// Validate a low balance threshold.
+///
+/// Applies the same rules for both `create_stream` and `create_streams_batch`.
+///
+/// # Panics
+/// - E001 if `threshold` < 0
+/// - E008 if `threshold` > MAX_LOW_BALANCE_THRESHOLD
+pub fn validate_low_balance_threshold(threshold: i128) {
+    assert!(threshold >= 0, "{}", ERR_ZERO_RATE);
+    assert!(
+        threshold <= MAX_LOW_BALANCE_THRESHOLD,
+        "{}",
+        ERR_INVALID_RATE
+    );
 }
 
 /// Validate a top-up amount.

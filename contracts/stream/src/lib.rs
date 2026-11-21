@@ -57,8 +57,8 @@ use types::{
     MAX_BATCH_SIZE,
 };
 use validate::{
-    validate_cliff, validate_create_stream, validate_rate, validate_split_beneficiaries,
-    validate_top_up,
+    validate_cliff, validate_create_stream, validate_low_balance_threshold, validate_rate,
+    validate_split_beneficiaries, validate_top_up,
 };
 
 fn get_paused(env: &Env) -> bool {
@@ -376,6 +376,7 @@ impl StreamContract {
             &employee,
         );
         validate_cliff(cliff_time, stop_time);
+        validate_low_balance_threshold(low_balance_threshold);
         // A cliff that has already passed is a no-op.
         let cliff = cliff_time.filter(|c| *c > now);
 
@@ -583,6 +584,7 @@ impl StreamContract {
                 );
             }
             validate_cliff(p.cliff_time, p.stop_time);
+            validate_low_balance_threshold(p.low_balance_threshold);
             assert!(
                 employer != p.employee,
                 "stream[{}]: employer and employee must differ",
@@ -636,7 +638,7 @@ impl StreamContract {
                 status: StreamStatus::Active,
                 pending_accrual: 0,
                 locked: false,
-                low_balance_threshold: 0,
+                low_balance_threshold: p.low_balance_threshold.unwrap_or(0),
                 pause_reason: None,
             };
             save_stream(&env, &stream);

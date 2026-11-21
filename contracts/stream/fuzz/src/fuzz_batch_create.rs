@@ -30,6 +30,7 @@ const EXPECTED_ERROR_PREFIXES: &[&str] = &[
     "E022:", // ERR_STOP_TIME_PAST
     "E029:", // ERR_BATCH_TOO_LARGE
     "E030:", // ERR_STOP_TIME_TOO_FAR
+    "E031:", // ERR_INVALID_LOW_BALANCE_THRESHOLD
     "stream[",
     "employer and employee must differ",
 ];
@@ -63,6 +64,7 @@ proptest! {
         count in 1usize..=50usize,
         deposit in 1i128..=100_000i128,
         rate    in 1i128..=1_000_000_000i128,
+        threshold in proptest::option::of(0i128..=100_000i128),
     ) {
         let (env, client, employer, token_id) = setup_env();
 
@@ -75,6 +77,7 @@ proptest! {
                 deposit,
                 rate_per_second: rate,
                 stop_time: 0,
+                low_balance_threshold: threshold,
             });
         }
 
@@ -98,6 +101,7 @@ proptest! {
                 deposit: 1_000,
                 rate_per_second: 1,
                 stop_time: 0,
+                low_balance_threshold: None,
             });
         }
 
@@ -143,6 +147,7 @@ proptest! {
                 deposit: 1_000,
                 rate_per_second: 1,
                 stop_time: 0,
+                low_balance_threshold: Some(500),
             });
         }
 
@@ -155,12 +160,37 @@ proptest! {
             deposit: invalid_deposit,
             rate_per_second: invalid_rate,
             stop_time: 0,
+            low_balance_threshold: None,
         });
 
         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             client.create_streams_batch(&employer, &params);
         }));
         prop_assert!(result.is_err(), "expected panic for batch with invalid entry");
+    }
+
+    /// Negative low_balance_threshold values must be rejected with the
+    /// documented validation error rather than silently accepted.
+    #[test]
+    fn fuzz_batch_create_negative_threshold_panics(
+        threshold in i128::MIN..=-1i128,
+    ) {
+        let (env, client, employer, token_id) = setup_env();
+
+        let mut params: SdkVec<StreamParams> = SdkVec::new(&env);
+        params.push_back(StreamParams {
+            employee: Address::generate(&env),
+            token: token_id.clone(),
+            deposit: 1_000,
+            rate_per_second: 1,
+            stop_time: 0,
+            low_balance_threshold: Some(threshold),
+        });
+
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            client.create_streams_batch(&employer, &params);
+        }));
+        prop_assert!(result.is_err(), "expected panic for negative low_balance_threshold");
     }
 }
 

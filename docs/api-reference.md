@@ -356,12 +356,13 @@ Employer creates multiple salary streams atomically. All streams succeed or all 
 | `rate_per_second` | `i128` | Tokens per second for this stream |
 | `stop_time` | `u64` | Hard stop timestamp (0 = indefinite) |
 | `cliff_time` | `Option<u64>` | Optional cliff (PROD-17); same rules as `create_stream`. Also stored in templates |
+| `low_balance_threshold` | `Option<i128>` | Optional low-balance alert threshold for this stream; same rules as `create_stream`. When omitted (`None`), the threshold defaults to `0` (alert disabled). Also stored in templates |
 
 **Returns:** `Vec<u64>` — list of new stream IDs in the same order as `params`
 
 **Limit:** 50 streams per call
 
-**Errors:** Same per-stream validations as `create_stream`, including protocol fee deduction; panics if `params` is empty or contains more than 50 entries (E029)
+**Errors:** Same per-stream validations as `create_stream`, including protocol fee deduction and `low_balance_threshold` validation; panics if `params` is empty or contains more than 50 entries (E029)
 
 **Example:**
 ```bash
