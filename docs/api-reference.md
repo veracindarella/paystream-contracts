@@ -1945,6 +1945,142 @@ Emitted by `set_low_balance_threshold` when the employer updates the low-balance
 
 ---
 
+## Indexer API (BE-01 / BE-06)
+
+The indexer exposes a read-only HTTP API over the events emitted by the stream
+contract. The frontend transaction history panel (FE-23) and other dashboards
+consume these endpoints instead of scanning the chain. All responses are JSON.
+
+Base URL (testnet): `https://indexer.testnet.paystream.example/v1`
+
+### Authentication and rate limiting (BE-7)
+
+Every request is subject to token-bucket rate limiting. Buckets are keyed by
+API key when one is supplied, otherwise by client IP.
+
+| Caller | Auth required | Rate limit |
+|---|---|---|
+| Anonymous read (`GET`) | No | Throttled per IP (default 30 req/min, burst 10) |
+| Authenticated read (`GET`) | API key | Per-key bucket (default 300 req/min, burst 60) |
+| Write / subscribe (`POST`, `PUT`, `DELETE`, WebSocket subscribe) | API key | Per-key bucket (default 60 req/min, burst 10) |
+
+When a bucket is exhausted the API responds with `429 Too Many Requests` and a
+`Retry-After` header giving the number of seconds until the next token is
+available. Clients should honour `Retry-After` and back off exponentially on
+repeated 429s.
+
+```http
+HTTP/1.1 429 Too Many Requests
+Retry-After: 7
+Content-Type: application/json
+
+{"error":"rate_limited","message":"token bucket exhausted","retry_after":7}
+```
+
+Anonymous reads are allowed but throttled; write and subscribe endpoints reject
+requests without a valid key with `401 Unauthorized`.
+
+#### API keys
+
+API keys are issued and revoked by the indexer operator. Keys are shown once at
+issuance and stored hashed; each key carries a label, a scope set
+(`read`, `write`, `subscribe`) and an optional expiry.
+
+| Endpoint | Method | Description |
+|---|---|---|
+| `/api-keys` | `POST` | Issue a new key. Body: `{"label":"ci","scopes":["read","write"],"expires_at":1893456000}`. Returns `{"key_id":"...","api_key":"ps_live_..."}` — the plaintext `api_key` is returned only once |
+| `/api-keys` | `GET` | List keys (metadata only, never the secret) |
+| `/api-keys/{key_id}` | `DELETE` | Revoke a key immediately; in-flight requests using it fail with `401` |
+
+Send the key in the `Authorization` header:
+
+```bash
+curl -H "Authorization: Bearer ps_live_..." \
+  "https://indexer.testnet.paystream.example/v1/streams/1/events"
+```
+
+#### Audit log
+
+Every authenticated request is recorded in an audit log with the key ID (never
+the secret), client IP, method, path, status code and timestamp. Operators can
+query it via `GET /api-keys/{key_id}/audit` to review key usage and detect
+abuse. Audit entries are retained for 90 days.
+
+---
+
+### `GET /streams/{stream_id}/events`
+
+Return the chronological activity log for a single stream, sourced from indexed
+events (withdrawals, top-ups, rate changes, status transitions, and the other
+events documented under [Events](#events)). This is the data source for the
+FE-23 transaction history panel.
+
+**Auth:** optional (anonymous reads are throttled)
+
+| Query parameter | Type | Description |
+|---|---|---|
+| `from` | `u64` | Optional inclusive lower bound on ledger timestamp |
+| `to` | `u64` | Optional exclusive upper bound on ledger timestamp |
+| `type` | `string` | Optional comma-separated event filter, e.g. `withdraw,top_up,rate_updated,status` |
+| `cursor` | `string` | Opaque pagination cursor from a previous response |
+| `limit` | `u32` | Page size, 1–200 (default 50) |
+
+**Returns:** events in ascending ledger order (ties broken by event index), so
+the panel can render oldest-to-newest without client-side sorting.
+
+```json
+{
+  "stream_id": 1,
+  "events": [
+    {"type": "status", "ledger": 100, "tx_hash": "ab..", "timestamp": 1714569600, "data": {"from": "Active", "to": "Paused"}},
+    {"type": "top_up", "ledger": 120, "tx_hash": "cd..", "timestamp": 1714570800, "data": {"amount": 500000}},
+    {"type": "rate_updated", "ledger": 140, "tx_hash": "ef..", "timestamp": 1714572000, "data": {"old_rate": 10, "new_rate": 20}},
+    {"type": "withdraw", "ledger": 160, "tx_hash": "gh..", "timestamp": 1714573200, "data": {"amount": 2000}}
+  ],
+  "next_cursor": null
+}
+```
+
+**Errors:**
+- `404` if the stream is unknown to the indexer
+- `429` with `Retry-After` when the rate-limit bucket is exhausted
+
+**Empty state:** if the indexer is unavailable or has not yet indexed the
+stream, the endpoint returns `503` (unavailable) or an empty `events` array.
+The panel must render a graceful empty state ("No activity yet") in both cases
+rather than an error.
+
+**Example:**
+```bash
+curl "https://indexer.testnet.paystream.example/v1/streams/1/events?limit=50"
+```
+
+---
+
+### `GET /streams/{stream_id}/events/export`
+
+Export the full event history for a single stream as a downloadable file. Uses
+the same filters as the listing endpoint (`from`, `to`, `type`) and ignores
+`cursor`/`limit` — the whole matching history is exported.
+
+**Auth:** optional (anonymous reads are throttled)
+
+| Query parameter | Type | Description |
+|---|---|---|
+| `format` | `string` | `csv` (default) or `json` |
+| `from` / `to` / `type` | — | Same semantics as the listing endpoint |
+
+**Returns:** `text/csv` or `application/json` with
+`Content-Disposition: attachment; filename="stream-1-events.csv"`. CSV columns:
+`timestamp,ledger,tx_hash,type,data`.
+
+**Example:**
+```bash
+curl -OJ "https://indexer.testnet.paystream.example/v1/streams/1/events/export?format=csv"
+```
+
+---
+
 ## Error Codes
 
 Stream contract panics are prefixed with a stable code defined in `contracts/stream/src/types.rs`.
@@ -1963,6 +2099,8 @@ Keep this table in sync with that file (see [CONTRIBUTING.md](../CONTRIBUTING.md
 | E009 | `ERR_BAD_NONCE` | Invalid admin nonce | `propose_admin`, `pause_contract`, `unpause_contract`, `set_min_deposit`, `expire_streams`, `upgrade`, `propose_upgrade`, `execute_upgrade`, `cancel_upgrade` | Read the current value with `admin_nonce` and pass it as `nonce` |
 | E009 | `ERR_BAD_NONCE` | Invalid admin nonce | `propose_admin`, `pause_contract`, `unpause_contract`, `set_min_deposit`, `set_protocol_fee`, `upgrade`, `propose_upgrade`, `execute_upgrade`, `cancel_upgrade` | Read the current value with `admin_nonce` and pass it as `nonce` |
 | E029 | `ERR_BATCH_TOO_LARGE` | Batch contains more than 50 streams | `create_streams_batch`, `cancel_streams_batch` | Split the operation into batches of at most 50 streams |
+| HTTP 401 | `unauthorized` (indexer) | Missing or revoked API key on a write/subscribe endpoint | Indexer write/subscribe endpoints | Issue a key via `POST /api-keys` and send it as `Authorization: Bearer <key>` |
+| HTTP 429 | `rate_limited` (indexer) | Token bucket exhausted for the key or IP | All indexer endpoints | Wait `Retry-After` seconds and retry with backoff |
 | E030 | `ERR_INVALID_STOP_TIME` | Nonzero stop time precedes last withdrawal | `update_stop_time` | Use 0 or a timestamp at/after `last_withdraw_time` |
 | T001 | `ERR_OVERFLOW` (token) | Token arithmetic overflow | Token `mint`, `mint_to_batch`, `transfer`, `transfer_from` | Use smaller amounts |
 | T002 | `ERR_PAUSED` (token) | Token is paused | Token `transfer`, `transfer_from`, `burn`, `burn_from` | Wait for the admin to call `unpause_token` |

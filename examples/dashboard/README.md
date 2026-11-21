@@ -38,7 +38,7 @@ All token amounts are shown for 7-decimal Stellar assets (e.g. XLM stroops).
 
 ```bash
 cd examples/dashboard
-cp .env.example .env.local   # then edit NEXT_PUBLIC_STREAM_CONTRACT_ID
+cp .env.example .env.local   # then set NEXT_PUBLIC_STREAM_CONTRACT_ID (required, C..., 56 chars)
 npm install
 npm run dev                  # http://localhost:3000
 ```
@@ -47,8 +47,20 @@ npm run dev                  # http://localhost:3000
 
 | Variable | Description |
 |---|---|
-| `NEXT_PUBLIC_STREAM_CONTRACT_ID` | Stream contract id from `deploy-testnet.sh`. |
+| `NEXT_PUBLIC_STREAM_CONTRACT_ID` | **Required.** Stream contract id from `deploy-testnet.sh`. Must be a valid Stellar contract address (`C...`, 56 characters). |
 | `NEXT_PUBLIC_RPC_URL` | Soroban RPC endpoint (default `https://soroban-testnet.stellar.org`). |
+
+### Contract ID validation
+
+`NEXT_PUBLIC_STREAM_CONTRACT_ID` is validated so a misconfiguration cannot go
+unnoticed:
+
+- **Build time** — `npm run build` (i.e. `next build`) **fails** in production
+  builds when `NEXT_PUBLIC_STREAM_CONTRACT_ID` is missing or is not a valid
+  Stellar contract address. The error message names the required env var.
+- **Startup** — when the app starts, the contract ID format is checked again
+  (valid Stellar contract address: `C...`, 56 characters). An invalid value
+  produces a clear error that names `NEXT_PUBLIC_STREAM_CONTRACT_ID`.
 
 ## Usage
 

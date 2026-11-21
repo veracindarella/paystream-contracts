@@ -20,14 +20,56 @@ import {
 } from "@stellar/freighter-api";
 
 const RPC_URL = process.env.NEXT_PUBLIC_RPC_URL || "https://soroban-testnet.stellar.org";
-export const STREAM_CONTRACT_ID = process.env.NEXT_PUBLIC_STREAM_CONTRACT_ID || "";
 export const NETWORK_PASSPHRASE = Networks.TESTNET;
+
+const CONTRACT_ID_ENV = "NEXT_PUBLIC_STREAM_CONTRACT_ID";
+
+// StrKey contract addresses are base32 (RFC 4648, no padding) and start with
+// "C"; the version byte + 32-byte payload + CRC16 checksum encode to 56 chars.
+const CONTRACT_ID_RE = /^C[A-Z2-7]{55}$/;
+
+/**
+ * Validate a Stellar contract address (StrKey "C..." form).
+ *
+ * Throws a clear error naming NEXT_PUBLIC_STREAM_CONTRACT_ID when the value is
+ * missing or malformed, so misconfiguration fails fast at startup/build time
+ * instead of surfacing as an opaque runtime error.
+ */
+export function validateContractId(id: string | undefined): string {
+  const value = (id ?? "").trim();
+  if (!value) {
+    throw new Error(
+      `Missing required environment variable ${CONTRACT_ID_ENV}: set it to the deployed PayStream contract address (a Stellar contract ID starting with "C").`,
+    );
+  }
+  if (!CONTRACT_ID_RE.test(value)) {
+    throw new Error(
+      `Invalid ${CONTRACT_ID_ENV} "${value}": expected a Stellar contract address (56 characters, starting with "C", base32).`,
+    );
+  }
+  return value;
+}
+
+/**
+ * Startup check: ensure the contract ID is configured and well-formed.
+ * Call this once when the app boots so a bad env var fails loudly.
+ */
+export function assertContractIdConfigured(): string {
+  return validateContractId(process.env.NEXT_PUBLIC_STREAM_CONTRACT_ID);
+}
+
+// Derived via the validator so an invalid value fails fast. The env var is
+// inlined at build time by Next.js; during static prerender it may be unset,
+// in which case we fall back to "" and defer the error to `assertContractIdConfigured`.
+export const STREAM_CONTRACT_ID = process.env.NEXT_PUBLIC_STREAM_CONTRACT_ID
+  ? validateContractId(process.env.NEXT_PUBLIC_STREAM_CONTRACT_ID)
+  : "";
 
 export const server = new rpc.Server(RPC_URL);
 // Built lazily: `new Contract("")` throws, and this module is also evaluated
 // during static prerender where the env var may be unset.
 let _stream: Contract | null = null;
-const stream = () => (_stream ??= new Contract(STREAM_CONTRACT_ID));
+const stream = () => (_stream ??= new Contract(assertContractIdConfigured()));
 
 // Argument helpers (mirrors docs/client-guide.md)
 const addr = (a: string) => new Address(a).toScVal();
