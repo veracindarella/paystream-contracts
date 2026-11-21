@@ -108,3 +108,74 @@ Instance keys share the TTL of the contract instance entry.
 - `Stream`, `EmployerStreams`, `EmployeeStreams` — unchanged by upgrades. If a future version
   changes the `Stream` struct layout, `Version` will be bumped and the change noted in
   `CHANGELOG.md` and [upgrade-guide.md](upgrade-guide.md).
+
+---
+
+## Off-chain indexer schema
+
+The indexer keeps its own persistent store (SQLite/Postgres) built from contract events and
+ledger state. It is versioned independently of the contract `Version` key so the indexer can
+evolve without a resync. Migrations live in `indexer/migrations/` as numbered, forward-only
+SQL files (`0001_init.sql`, `0002_admin_audit.sql`, …).
+
+### `schema_version`
+
+Single-row table tracking the applied migration.
+
+| Column | Type | Notes |
+|---|---|---|
+| `version` | `INTEGER` | Highest applied migration number |
+| `applied_at` | `TIMESTAMP` | When the migration ran |
+
+On startup the indexer reads `version`, applies every migration with a higher number in
+ascending order inside a transaction, and bumps `version`. Migrations are **forward-only**:
+there are no down migrations; a bad migration is fixed by adding a new numbered one. A
+migration that has already been applied is never edited.
+
+### Tables
+
+| Table | Purpose | Key columns |
+|---|---|---|
+| `streams` | One row per stream, mirroring the `Stream` struct | `id` (PK), `employer`, `employee`, `token`, `deposit`, `withdrawn`, `rate_per_second`, `start_time`, `stop_time`, `last_withdraw_time`, `status`, `stream_type`, `cliff_time`, `ended_at`, `created_ledger`, `updated_ledger` |
+| `beneficiaries` | Split beneficiaries per stream | `stream_id` (FK → `streams.id`), `address`, `bps`; PK `(stream_id, address)` |
+| `events` | Raw decoded contract events, append-only | `id` (PK), `contract_id`, `ledger`, `tx_hash`, `event_index`, `topic`, `stream_id`, `actor`, `amount`, `payload` (JSON), `ingested_at`; unique `(tx_hash, event_index)` |
+| `aggregates` | Precomputed rollups for dashboards | `bucket` (e.g. `day`), `bucket_start`, `employer`, `employee`, `token`, `stream_count`, `deposited`, `withdrawn`, `fees`; PK `(bucket, bucket_start, employer, employee, token)` |
+| `admin_audit` | Governance/admin actions (BE-11) | `id` (PK), `ledger`, `tx_hash`, `event_index`, `action`, `admin`, `target`, `nonce`, `payload` (JSON), `ingested_at`; unique `(tx_hash, event_index)` |
+
+`events` and `admin_audit` are append-only; reorg handling deletes rows above the fork ledger
+and re-ingests. `streams` and `aggregates` are derived and can be rebuilt from `events`.
+
+### Indexes (FE query patterns)
+
+| Index | Backs |
+|---|---|
+| `idx_streams_employer (employer, status)` | Employer dashboard: streams by employer, filtered by status |
+| `idx_streams_employee (employee, status)` | Employee dashboard: streams by employee, filtered by status |
+| `idx_streams_token (token, status)` | Token-filtered queries |
+| `idx_streams_status (status)` | Global status filters / counts |
+| `idx_streams_employer_created (employer, created_ledger)` | Time-ordered employer lists |
+| `idx_events_stream (stream_id, ledger)` | Per-stream event history |
+| `idx_events_topic (topic, ledger)` | Event-type scans |
+| `idx_aggregates_lookup (bucket, bucket_start, employer, employee, token)` | Aggregate lookups |
+| `idx_admin_audit_admin (admin, ledger)` | Audit trail by admin address (BE-11) |
+| `idx_admin_audit_action (action, ledger)` | Audit trail by action type |
+
+### Admin / governance events (BE-11)
+
+The following events are decoded into `admin_audit` with `action` set to the event name:
+
+- `propose_admin`, `accept_admin` (`target` = new admin)
+- `pause_contract`, `unpause_contract`
+- `set_min_deposit`, `set_protocol_fee` (`payload` holds old/new values)
+- `propose_upgrade`, `execute_upgrade`, `cancel_upgrade` (`payload` holds WASM hash / target)
+
+**Admin nonce sequence.** The contract stores `AdminNonce` as a counter, but the indexer
+reconstructs the sequence from events: each nonce-protected admin event carries its nonce in
+`payload`, and `admin_audit.nonce` stores it. The current nonce for an admin is
+`MAX(nonce)` over `admin_audit` for that `admin`; gaps or out-of-order nonces indicate a
+missed or replayed event and are flagged.
+
+**Alerts.** The indexer raises an alert when an admin action is unexpected: an `accept_admin`
+or `execute_upgrade` with no matching prior `propose_*`, a nonce gap, or a pause/unpause or
+fee change outside the configured expected window. Alerts are written to the `events` table
+with `topic = "alert"` and surfaced to governance tooling.

@@ -226,3 +226,62 @@ pub fn max_creates_per_ledger_updated(env: &Env, max: u32) {
     env.events()
         .publish((symbol_short!("v1"), symbol_short!("rl_upd"),), max);
 }
+
+// ---------------------------------------------------------------------------
+// Admin / governance events (BE-11 / #412)
+//
+// These events are indexed by the indexer's `admin_audit` table so governance
+// tools can audit admin activity and reconstruct the admin nonce sequence.
+// Each admin action carries the resulting `nonce` so the indexer can order and
+// verify the sequence without re-reading contract storage.
+// ---------------------------------------------------------------------------
+
+/// Emitted when a new admin is proposed via `propose_admin`.
+///
+/// Topics: `("v1", "adm_prop")`; data: `(current_admin, proposed_admin, nonce)`.
+pub fn admin_proposed(env: &Env, current_admin: &Address, proposed_admin: &Address, nonce: u64) {
+    env.events().publish(
+        (symbol_short!("v1"), symbol_short!("adm_prop")),
+        (current_admin.clone(), proposed_admin.clone(), nonce),
+    );
+}
+
+/// Emitted when a proposed admin accepts via `accept_admin`.
+///
+/// Topics: `("v1", "adm_acc")`; data: `(old_admin, new_admin, nonce)`.
+pub fn admin_accepted(env: &Env, old_admin: &Address, new_admin: &Address, nonce: u64) {
+    env.events().publish(
+        (symbol_short!("v1"), symbol_short!("adm_acc")),
+        (old_admin.clone(), new_admin.clone(), nonce),
+    );
+}
+
+/// Emitted when the contract is paused or unpaused.
+///
+/// Topics: `("v1", "adm_pause")`; data: `(admin, paused, nonce)`.
+pub fn admin_pause_changed(env: &Env, admin: &Address, paused: bool, nonce: u64) {
+    env.events().publish(
+        (symbol_short!("v1"), symbol_short!("adm_pause")),
+        (admin.clone(), paused, nonce),
+    );
+}
+
+/// Emitted when the minimum deposit is changed via `set_min_deposit`.
+///
+/// Topics: `("v1", "adm_mindep")`; data: `(admin, old_min, new_min, nonce)`.
+pub fn min_deposit_updated(env: &Env, admin: &Address, old_min: i128, new_min: i128, nonce: u64) {
+    env.events().publish(
+        (symbol_short!("v1"), symbol_short!("adm_mindep")),
+        (admin.clone(), old_min, new_min, nonce),
+    );
+}
+
+/// Emitted when the protocol fee is changed via `set_protocol_fee`.
+///
+/// Topics: `("v1", "adm_fee")`; data: `(admin, old_fee_bps, new_fee_bps, nonce)`.
+pub fn protocol_fee_updated(env: &Env, admin: &Address, old_fee_bps: u32, new_fee_bps: u32, nonce: u64) {
+    env.events().publish(
+        (symbol_short!("v1"), symbol_short!("adm_fee")),
+        (admin.clone(), old_fee_bps, new_fee_bps, nonce),
+    );
+}

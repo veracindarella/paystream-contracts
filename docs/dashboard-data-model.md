@@ -108,18 +108,74 @@ Contract storage keeps only the current state, so all history comes from events 
 
 ---
 
-## 5. Suggested Indexer Schema
+## 5. Indexer Schema
+
+The indexer persists the data above in a relational store. The schema is defined in the backend crate (`backend/src/db/schema.rs`) and applied through **forward-only, versioned migrations** tracked in the `schema_version` table, so the indexer can evolve without a full resync.
+
+### 5.1 Tables
 
 ```text
+schema_version(version PK, applied_at)
+
 streams(id PK, employer, employee, token, deposit, withdrawn, rate_per_second,
         start_time, stop_time, status, low_balance_threshold,
         created_ledger, updated_ledger)
 
+beneficiaries(stream_id FK, employee, token, PK(stream_id, employee))
+
 stream_events(id PK, stream_id FK, kind, ledger, timestamp, tx_hash,
               amount, refund_amount, old_rate, new_rate, status, remaining, threshold)
 
-employer_daily(employer, token, day, deposited, withdrawn, refunded,
-               active_streams, burn_rate, PK(employer, token, day))
+aggregates(bucket PK, employer, employee, token, status, day,
+           deposited, withdrawn, refunded, active_streams, burn_rate)
+
+admin_audit(id PK, kind, admin, target_admin, ledger, timestamp, tx_hash,
+            nonce, amount, paused, proposal_id)
 ```
 
-`streams` is refreshed via `get_streams_batch` on each event touching a stream; `stream_events` is an append-only log of the events above; `employer_daily` is a rollup materialised from `stream_events`.
+- `streams` is refreshed via `get_streams_batch` on each event touching a stream and holds the current state of each stream.
+- `beneficiaries` maps each stream to its recipient so employee-side queries do not need to scan `streams`.
+- `stream_events` is an append-only log of the events in §3.
+- `aggregates` is a rollup materialised from `stream_events`, keyed by `(employer, employee, token, status, day)`.
+- `admin_audit` is an append-only log of governance actions (see §6).
+
+**Claimable is never cached.** `claimable` / `claimable_at` are read from the contract at request time, because they depend on the current ledger. The indexer stores only amounts that are fixed once an event is emitted (`deposit`, `withdrawn`, `refund_amount`, rates).
+
+### 5.2 Indexes and supported query patterns
+
+| Query pattern | Index | Serves |
+|---|---|---|
+| Streams by employer | `streams(employer)` | Employer overview, stream table |
+| Streams by employee | `beneficiaries(employee)`, `streams(employee)` | Employee dashboard |
+| Streams by token | `streams(token)` | Per-token totals and charts |
+| Streams by status | `streams(status)` | Active / Paused / Cancelled / Exhausted counts |
+| Employer + token + status | `streams(employer, token, status)` | Overview cards without a full scan |
+| Events for a stream | `stream_events(stream_id, ledger)` | Per-stream history, last activity |
+| Events by kind and time | `stream_events(kind, ledger)` | Time-series rollups, alert inbox |
+| Aggregates by employer / employee / token / day | `aggregates(employer, token, day)`, `aggregates(employee, token, day)` | Dashboard charts |
+| Admin activity by admin address | `admin_audit(admin, ledger)` | Governance audit trail (§6) |
+| Admin activity by action kind | `admin_audit(kind, ledger)` | Alerts on unexpected admin actions |
+
+### 5.3 Migrations
+
+Migrations are applied in order at startup; each records its version in `schema_version` and is never rolled back. New columns/tables are added in new migration steps, so an existing indexer database is upgraded in place rather than resynced.
+
+---
+
+## 6. Admin / Governance Audit Trail
+
+Governance tools audit admin activity from the `admin_audit` table, which is populated from the admin events below.
+
+| Event | Topics | Data | Emitted by |
+|---|---|---|---|
+| `admin_nonce` | `("admin_nonce",)` | `(admin, nonce)` | Any admin action that consumes a nonce |
+| `admin_prop` | `("admin_prop",)` | `(admin, proposal_id)` | `propose_admin`, `propose_upgrade` |
+| `admin_accept` | `("admin_accept",)` | `(admin, target_admin)` | `accept_admin` |
+| `paused` | `("paused",)` | `bool` | `pause_contract`, `unpause_contract` |
+| `fee_set` | `("fee_set",)` | `(admin, amount)` | `set_protocol_fee`, `set_min_deposit` |
+| `upgrade` | `("upgrade",)` | `(admin, proposal_id)` | Upgrade execution steps |
+
+- **Nonce sequence** is reconstructed by ordering `admin_nonce` rows per `admin` by `ledger`; gaps or out-of-order nonces indicate a missed or replayed action.
+- **Audit by admin** is a single indexed lookup: `admin_audit(admin, ledger)` returns the full history for one admin address.
+- **Alerts** fire when an admin action occurs that was not preceded by the expected proposal/accept sequence, when a nonce is skipped, or when pause/fee changes happen outside an expected window.
+=======

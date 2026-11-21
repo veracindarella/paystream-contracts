@@ -28,6 +28,208 @@ building custom tooling.
 
 ---
 
+## REST API (v1)
+
+The backend exposes the indexed stream data over a versioned REST API so
+dashboards and integrators do not need to query the chain directly. All
+endpoints are prefixed with `/v1`; breaking changes ship under a new version
+prefix.
+
+The machine-readable contract is committed as
+[`docs/openapi.yaml`](openapi.yaml) and is rendered by the docs site. The
+sections below summarise the endpoints; the OpenAPI document is the source of
+truth for schemas, status codes and examples.
+
+**Base URL:** `https://api.paystream.example/v1` (testnet deployments may use a
+different host — see [testnet.md](testnet.md)).
+
+### Conventions
+
+- **Content type:** requests and responses are `application/json`.
+- **Addresses:** Stellar addresses (`G...` account or `C...` contract) are
+  passed as path parameters and validated before any lookup.
+- **Pagination:** list endpoints accept `limit` and `offset` query parameters.
+  - `limit` — page size, integer `1`–`100`, default `20`.
+  - `offset` — number of records to skip, integer `≥ 0`, default `0`.
+  - Responses include a `pagination` object: `{ "limit", "offset", "total" }`,
+    where `total` is the number of matching records across all pages.
+- **Timestamps:** Unix seconds, encoded as JSON numbers.
+- **Amounts:** `i128` token amounts are encoded as JSON strings to avoid
+  precision loss in JavaScript clients.
+
+### Request validation
+
+Every request is validated before it reaches the indexer. Invalid input returns
+`400 Bad Request` with an error body:
+
+```json
+{ "error": "validation_error", "message": "limit must be between 1 and 100" }
+```
+
+Validation rules:
+
+| Input | Rule | Failure |
+|---|---|---|
+| `{id}` (stream ID) | Must be an unsigned 64-bit integer | `400` |
+| `{addr}` (employer/employee/admin) | Must be a valid Stellar address (strkey) | `400` |
+| `limit` | Integer `1`–`100` | `400` |
+| `offset` | Integer `≥ 0` | `400` |
+| Unknown query parameters | Rejected | `400` |
+
+### 404 handling
+
+When a path parameter is valid but no matching record exists, the API returns
+`404 Not Found`:
+
+```json
+{ "error": "not_found", "message": "stream 42 not found" }
+```
+
+List endpoints for an address with no streams return `200 OK` with an empty
+`data` array and `total: 0` — they do **not** return `404`.
+
+---
+
+### `GET /v1/streams/{id}`
+
+Return the indexed state of a single stream.
+
+**Path parameters:**
+
+| Name | Type | Description |
+|---|---|---|
+| `id` | `u64` | Stream ID |
+
+**Response `200 OK`:**
+
+```json
+{
+  "id": 42,
+  "employer": "G...",
+  "employee": "G...",
+  "token": "C...",
+  "deposit": "1000000",
+  "withdrawn": "250000",
+  "rate_per_second": "100",
+  "start_time": 1714569600,
+  "stop_time": 0,
+  "last_withdraw_time": 1714656000,
+  "status": "Active",
+  "stream_type": "Payroll",
+  "claimable": "50000",
+  "claimable_at": 1714742400
+}
+```
+
+**Claimable snapshot:** `claimable` is **not** read from the index. It is
+computed from the on-chain `claimable(stream_id)` view at request time, so the
+value always reflects the current ledger. `claimable_at` records the ledger
+timestamp at which the snapshot was taken. If the chain is unreachable the
+endpoint returns `503 Service Unavailable` rather than a stale value.
+
+**Errors:** `400` invalid ID · `404` stream not found · `503` chain unavailable.
+
+---
+
+### `GET /v1/employers/{addr}/streams`
+
+List streams funded by an employer, in creation order.
+
+**Path parameters:**
+
+| Name | Type | Description |
+|---|---|---|
+| `addr` | `Address` | Employer address |
+
+**Query parameters:** `limit`, `offset` (see [Pagination](#conventions)).
+
+**Response `200 OK`:**
+
+```json
+{
+  "data": [ { "id": 42, "...": "..." } ],
+  "pagination": { "limit": 20, "offset": 0, "total": 3 }
+}
+```
+
+Each item uses the same shape as `GET /v1/streams/{id}`, including the
+request-time `claimable` snapshot.
+
+**Errors:** `400` invalid address or pagination · `503` chain unavailable.
+
+---
+
+### `GET /v1/employees/{addr}/streams`
+
+List streams paying an employee, in creation order.
+
+**Path parameters:**
+
+| Name | Type | Description |
+|---|---|---|
+| `addr` | `Address` | Employee address |
+
+**Query parameters:** `limit`, `offset` (see [Pagination](#conventions)).
+
+**Response `200 OK`:** same envelope as the employer list, with each item
+carrying a request-time `claimable` snapshot.
+
+**Errors:** `400` invalid address or pagination · `503` chain unavailable.
+
+---
+
+### `GET /v1/admins/{addr}/audit`
+
+Return the governance audit trail for an admin address, newest first. Covers
+admin nonce changes, `propose_admin` / `accept_admin`, `pause_contract` /
+`unpause_contract`, `set_min_deposit`, `set_protocol_fee`, and the upgrade
+lifecycle (`propose_upgrade`, `execute_upgrade`, `cancel_upgrade`).
+
+**Path parameters:**
+
+| Name | Type | Description |
+|---|---|---|
+| `addr` | `Address` | Admin address |
+
+**Query parameters:**
+
+| Name | Type | Description |
+|---|---|---|
+| `limit` | `u32` | Page size, `1`–`100`, default `20` |
+| `offset` | `u32` | Records to skip, default `0` |
+| `action` | `string` | Optional filter, e.g. `pause_contract`, `set_protocol_fee` |
+| `from` | `u64` | Optional inclusive lower bound on ledger timestamp |
+| `to` | `u64` | Optional exclusive upper bound on ledger timestamp |
+
+**Response `200 OK`:**
+
+```json
+{
+  "data": [
+    {
+      "action": "set_protocol_fee",
+      "admin": "G...",
+      "nonce": 7,
+      "ledger": 1234567,
+      "timestamp": 1714742400,
+      "tx_hash": "...",
+      "details": { "fee_bps": 10, "treasury": "G..." }
+    }
+  ],
+  "pagination": { "limit": 20, "offset": 0, "total": 1 }
+}
+```
+
+The `nonce` field is reconstructed from the indexed events, so the sequence of
+admin actions can be audited without replaying the ledger. Unexpected admin
+actions (e.g. a pause or upgrade not announced out-of-band) raise an alert in
+the indexer's monitoring; see [events-schema.md](events-schema.md) for the
+underlying events.
+
+**Errors:** `400` invalid address, pagination or filter · `503` chain unavailable.
+
+---
+
 ## Stream Contract
 
 ### `initialize`

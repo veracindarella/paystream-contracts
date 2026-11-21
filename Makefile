@@ -1,5 +1,6 @@
 .PHONY: build test integration-test fmt fmt-check lint deny clean deploy-local deploy-testnet setup setup-hooks create-stream
 .PHONY: build test integration-test fmt fmt-check lint deny clean deploy-local deploy-testnet setup setup-hooks stream-status
+.PHONY: indexer api migrate
 
 build:
 	stellar contract build
@@ -126,6 +127,32 @@ setup-hooks:
 
 create-stream:
 	./scripts/create-stream-wizard.sh
+
+# Build the backend indexer/API crate.
+indexer:
+	cargo build -p paystream-indexer --release
+
+# Apply forward-only schema migrations (version table tracked in the DB).
+# Usage: make migrate [DATABASE_URL=postgres://...]
+migrate:
+	@if [ -z "$(DATABASE_URL)" ]; then \
+		echo "Usage: make migrate DATABASE_URL=<connection-string>"; \
+		exit 1; \
+	fi
+	DATABASE_URL="$(DATABASE_URL)" cargo run -p paystream-indexer --release -- migrate
+
+# Run the indexer and REST API (serves /v1/*, /healthz, /readyz, /metrics).
+# Usage: make api [DATABASE_URL=...] [RPC_URL=...] [PORT=8080]
+api:
+	@if [ -z "$(DATABASE_URL)" ]; then \
+		echo "Usage: make api DATABASE_URL=<connection-string> [RPC_URL=<url>] [PORT=8080]"; \
+		exit 1; \
+	fi
+	DATABASE_URL="$(DATABASE_URL)" \
+	$(if $(RPC_URL),RPC_URL="$(RPC_URL)",) \
+	$(if $(PORT),PORT="$(PORT)",) \
+	cargo run -p paystream-indexer --release -- serve
+
 stream-status:
 	@if [ -z "$(CONTRACT_ID)" ] || [ -z "$(EMPLOYER)" ]; then \
 		echo "Usage: make stream-status CONTRACT_ID=<ID> EMPLOYER=<ADDRESS> [NETWORK=testnet]"; \

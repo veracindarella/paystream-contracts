@@ -149,6 +149,104 @@ stellar contract invoke --id "$STREAM_ID" --source "$ADMIN" --network "$NETWORK"
 stellar contract invoke --id "$STREAM_ID" --source "$ADMIN" --network "$NETWORK" -- version
 ```
 
+## 6. Operations endpoints (health, readiness, metrics)
+
+The indexer/API service exposes three unauthenticated HTTP endpoints for monitoring. They are served by the same process as the API; no admin credentials are required.
+
+| Endpoint | Purpose | Success | Failure |
+|---|---|---|---|
+| `GET /healthz` | Process liveness | `200` while the process is up | No response / connection refused |
+| `GET /readyz` | Readiness: DB connectivity **and** indexer lag | `200` when DB reachable and lag ≤ threshold | `503` with a JSON body naming the failing check |
+| `GET /metrics` | Prometheus exposition format | `200` | — |
+
+### 6.1 `/healthz` — liveness
+
+Reports only that the process is running and its event loop is responsive. It does **not** touch the database or chain, so a `200` here means "do not restart the pod", not "safe to send traffic".
+
+```bash
+curl -fsS http://<indexer-host>:<port>/healthz
+```
+
+Wire this to the orchestrator liveness probe (restart on repeated failure).
+
+### 6.2 `/readyz` — readiness
+
+Runs two checks and returns `503` if either fails:
+
+1. **DB connectivity** — a `SELECT 1` against the indexer database.
+2. **Indexer lag** — `latest_chain_ledger - last_indexed_ledger` must be ≤ `INDEXER_MAX_LAG_LEDGERS` (default `50`). Lag is computed from the ledger cursor persisted by the indexer.
+
+```bash
+curl -fsS http://<indexer-host>:<port>/readyz
+# 200 {"status":"ok","db":"ok","lag_ledgers":3}
+# 503 {"status":"degraded","db":"ok","lag_ledgers":412,"max_lag_ledgers":50}
+```
+
+Wire this to the readiness probe so traffic is drained while the indexer catches up. A `503` here is expected during backfills and after a chain restart — do not page on readiness alone; page on the lag alert below.
+
+### 6.3 `/metrics` — Prometheus
+
+Scrape `/metrics` from the OPS Prometheus instance. Exported metrics relevant to the indexer:
+
+| Metric | Type | Description |
+|---|---|---|
+| `paystream_indexer_chain_lag_ledgers` | gauge | Ledgers between the chain head and the last indexed ledger |
+| `paystream_indexer_events_total` | counter | Events processed, labelled by `contract` and `event_type` |
+| `paystream_indexer_event_errors_total` | counter | Events that failed to decode/apply, labelled by `reason` |
+| `paystream_indexer_event_processing_seconds` | histogram | Per-batch event processing latency |
+| `paystream_indexer_db_up` | gauge | `1` if the DB check passes, `0` otherwise |
+
+Event throughput is `rate(paystream_indexer_events_total[5m])`; error rate is `rate(paystream_indexer_event_errors_total[5m]) / rate(paystream_indexer_events_total[5m])`.
+
+### 6.4 Lag alert (wired to OPS monitoring)
+
+The lag alert is defined in the OPS Prometheus rules and routed to the OPS on-call channel. It fires when the indexer falls behind the chain head for a sustained period:
+
+```yaml
+groups:
+  - name: paystream-indexer
+    rules:
+      - alert: PayStreamIndexerLagging
+        expr: paystream_indexer_chain_lag_ledgers > 50
+        for: 5m
+        labels:
+          severity: warning
+          team: ops
+        annotations:
+          summary: "Indexer is {{ $value }} ledgers behind chain head"
+          runbook: "docs/operations-runbook.md#64-lag-alert-wired-to-ops-monitoring"
+      - alert: PayStreamIndexerDown
+        expr: up{job="paystream-indexer"} == 0
+        for: 2m
+        labels:
+          severity: critical
+          team: ops
+```
+
+**Wiring:** the rule file lives in the OPS monitoring repo and is deployed with the Prometheus config; `team: ops` routes to the OPS on-call rotation via Alertmanager. Keep the threshold in sync with `INDEXER_MAX_LAG_LEDGERS` — if you change one, change the other in the same PR.
+
+**Response:** on `PayStreamIndexerLagging`, check `/readyz` and the `paystream_indexer_event_errors_total` rate. A rising error rate usually means a contract event shape changed or a decode bug — see the error-rate panel before restarting. On `PayStreamIndexerDown`, check `/healthz` and the process logs.
+
+### 6.5 Alerting on unexpected admin actions
+
+Admin/governance activity (admin nonce changes, `propose_admin`/`accept_admin`, pause/unpause, `set_min_deposit`, `set_protocol_fee`, and upgrade propose/execute/cancel) is indexed into the `admin_audit` table. Each row records the admin address, action, nonce, ledger, and tx hash, so the full audit trail is queryable by admin address:
+
+```sql
+SELECT ledger, action, nonce, tx_hash
+FROM admin_audit
+WHERE admin = '<ADMIN_ADDRESS>'
+ORDER BY ledger DESC;
+```
+
+Alert on admin actions that were not expected. The OPS monitoring job polls `admin_audit` for rows newer than the last check and raises an alert for any action outside an approved change window:
+
+- Any `pause_contract` / `unpause_contract` outside a declared incident window
+- Any `propose_admin` / `accept_admin` not matching a scheduled handover
+- Any `propose_upgrade` / `execute_upgrade` without a matching approved release tag
+- Any `set_protocol_fee` / `set_min_deposit` change
+
+Route these to the security on-call channel with `severity: critical`. On alert, confirm the action against the change log and the tx hash in `admin_audit`; if unplanned, follow the incident procedure and, for a rogue admin transfer, re-propose the correct admin immediately (see [Admin transfer](#4-admin-transfer)).
+
 ## Common errors and recovery
 
 | Error | Cause | Recovery |

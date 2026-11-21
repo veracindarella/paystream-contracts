@@ -15,6 +15,12 @@ Each entry lists the event, the change (added field / renamed topic / removed fi
 | `init`, `created`, `withdraw`, `status`, `cancelled`, `topup`, `paused`, `rate_upd`, `stop_upd`, `near_exp`, `exp_unres`, `upg_prop`, `upg_exec`, `upg_cncl`, `at_set`, `at_up`, `thresh_up`, `split`, `p_stats` | Baseline: topic prefixed with `"v1"` | None. Match on `topic[0] == "v1"`, then `topic[1]` |
 | `receipt`, `archived`, `expired`, `xfr_strm`, `low_bal` | Baseline: emitted **without** a version prefix | Match on `topic[0]` directly. A future version will add the `"v1"` prefix and list it here |
 
+### v1.1 (2026-10-04) — admin/governance indexing (#412)
+
+| Event | Change | Migration |
+|-------|--------|-----------|
+| `adm_prop`, `adm_acc`, `adm_cncl`, `paused`, `min_dep`, `fee_set`, `upg_prop`, `upg_exec`, `upg_cncl` | Indexer now consumes these events to build the admin audit trail and reconstruct the admin nonce sequence (see [Admin & Governance Indexing](#admin--governance-indexing)). No topic or data changes | No parser changes required. Start persisting the events listed below if you want an audit trail |
+
 <!-- Template for new entries:
 ### vX.Y (YYYY-MM-DD)
 | Event | Change | Migration |
@@ -318,6 +324,83 @@ Emitted when a pending contract upgrade is cancelled.
 }
 ```
 
+## Admin & Governance Indexing
+
+Admin and governance actions are indexed so governance tooling can audit admin
+activity (#412). Every event below is emitted by an admin-gated entry point and
+carries the acting admin address in its data so the audit trail can be keyed by
+admin.
+
+### Event mapping
+
+| Contract action | Event name | Topic | Data |
+|-----------------|------------|-------|------|
+| `propose_admin` | `adm_prop` | `["v1", "adm_prop"]` | `admin` (Address), `new_admin` (Address), `nonce` (u64) |
+| `accept_admin` | `adm_acc` | `["v1", "adm_acc"]` | `admin` (Address), `nonce` (u64) |
+| `cancel_admin_proposal` | `adm_cncl` | `["v1", "adm_cncl"]` | `admin` (Address), `nonce` (u64) |
+| `pause` / `unpause` | `paused` | `["v1", "paused"]` | `paused` (bool), `admin` (Address), `nonce` (u64) |
+| `set_min_deposit` | `min_dep` | `["v1", "min_dep"]` | `admin` (Address), `old_min` (i128), `new_min` (i128), `nonce` (u64) |
+| `set_protocol_fee` | `fee_set` | `["v1", "fee_set"]` | `admin` (Address), `old_fee` (u32), `new_fee` (u32), `nonce` (u64) |
+| `propose_upgrade` | `upg_prop` | `["v1", "upg_prop"]` | `admin` (Address), `wasm_hash` (BytesN<32>), `unlock_time` (u64), `nonce` (u64) |
+| `execute_upgrade` | `upg_exec` | `["v1", "upg_exec"]` | `admin` (Address), `wasm_hash` (BytesN<32>), `nonce` (u64) |
+| `cancel_upgrade` | `upg_cncl` | `["v1", "upg_cncl"]` | `admin` (Address), `nonce` (u64) |
+
+Notes:
+
+- `paused` is emitted for both pause and unpause; distinguish them with the
+  `paused` boolean in data.
+- `upg_prop` / `upg_exec` / `upg_cncl` extend the v1 payloads documented above
+  with `admin` and `nonce`; indexers that only read the leading fields keep
+  working.
+- `nonce` is the contract-wide admin nonce **after** the action was applied
+  (monotonically increasing, starting at `1` for the first admin action).
+
+### Reconstructing the admin nonce sequence
+
+The admin nonce is a strictly increasing counter incremented by every
+admin-gated action. To rebuild it from events:
+
+1. Filter events whose `topic[1]` is one of the admin/governance event names
+   listed above.
+2. Order them by `(ledger_sequence, transaction_index, event_index)` — the
+   canonical Soroban ordering — **not** by the `nonce` field.
+3. Read `nonce` from each event's data. The sequence must be contiguous:
+   `1, 2, 3, ...` with no gaps and no duplicates.
+4. A gap or duplicate indicates a missed event or a reorg; re-sync the affected
+   ledger range before trusting the audit trail.
+5. The current admin nonce is the `nonce` of the last event in canonical order
+   (or `0` if no admin events exist yet).
+
+### Audit trail keyed by admin address
+
+Each admin/governance event includes the acting `admin` address in data. Build
+the audit trail by indexing on `(admin, nonce)`:
+
+- **Primary key**: `admin` address.
+- **Sort key**: `nonce` (equivalently canonical event order).
+- **Record**: `{ admin, nonce, action, ledger, tx_hash, event_index, payload }`
+  where `payload` holds the action-specific fields (`new_admin`, `paused`,
+  `old_min`/`new_min`, `old_fee`/`new_fee`, `wasm_hash`/`unlock_time`).
+
+This makes queries such as "all actions by admin X", "the action at nonce N",
+and "the full admin history in order" cheap to serve.
+
+### Alerts on unexpected admin actions
+
+Indexers should raise an alert (not just log) when any of the following is
+observed, since they indicate either a compromise or an indexer bug:
+
+- An admin/governance event whose `admin` is not the currently known admin.
+- A nonce gap, duplicate nonce, or out-of-order nonce relative to canonical
+  event order.
+- `adm_prop` followed by `adm_acc` from a `new_admin` that was never proposed.
+- `upg_exec` without a matching prior `upg_prop` for the same `wasm_hash`.
+- `upg_exec` before the proposal's `unlock_time`.
+- More than one `paused` toggle within a short window (possible flapping).
+- `fee_set` / `min_dep` changes outside the configured allowed bounds.
+
+---
+
 ## Type Reference
 
 | Type | Description | Example |
@@ -389,6 +472,7 @@ function parseV1Event(topic, data) {
 | Version | Date | Changes |
 |---------|------|---------|
 | v1 | 2026-09-27 | Initial schema version |
+| v1.1 | 2026-10-04 | Indexer consumes admin/governance events (`adm_prop`, `adm_acc`, `adm_cncl`, `paused`, `min_dep`, `fee_set`, `upg_prop`, `upg_exec`, `upg_cncl`) for the admin audit trail and nonce reconstruction (#412) |
 
 ## Testing
 
