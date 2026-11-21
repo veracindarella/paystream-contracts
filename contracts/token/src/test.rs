@@ -5,7 +5,7 @@
 extern crate std;
 
 use crate::{TokenContract, TokenContractClient};
-use soroban_sdk::testutils::{Address as _, Ledger};
+use soroban_sdk::testutils::{Address as _, Events, Ledger};
 use soroban_sdk::{vec, Address, Env, Vec};
 
 fn setup() -> (Env, TokenContractClient<'static>) {
@@ -653,4 +653,156 @@ fn test_mint_to_batch_cap_exceeded() {
         recipients.push_back((Address::generate(&env), 1));
     }
     client.mint_to_batch(&admin, &0, &recipients);
+}
+
+// ---------------------------------------------------------------------------
+// TOK-29 – admin multi-sig alignment with SEC-01
+// ---------------------------------------------------------------------------
+
+fn setup_multisig(env: &Env) -> (TokenContractClient<'static>, Address, Vec<Address>) {
+    let id = env.register(TokenContract, ());
+    let client = TokenContractClient::new(env, &id);
+    let admin = Address::generate(env);
+    let mut signers: Vec<Address> = Vec::new(env);
+    for _ in 0..3 {
+        signers.push_back(Address::generate(env));
+    }
+    client.initialize(&admin, &1_000);
+    client.set_admin_signers(&admin, &0, &signers, &2);
+    (client, admin, signers)
+}
+
+#[test]
+fn test_multisig_admin_op_succeeds_with_threshold_signers() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, admin, signers) = setup_multisig(&env);
+    let user = Address::generate(&env);
+    let approvals = vec![&env, signers.get(0).unwrap(), signers.get(1).unwrap()];
+    client.mint_multisig(&admin, &user, &100, &1, &approvals);
+    assert_eq!(client.balance(&user), 100);
+    assert_eq!(client.admin_nonce(), 2);
+}
+
+#[test]
+#[should_panic(expected = "T005: insufficient signers")]
+fn test_multisig_admin_op_rejected_with_single_key() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, admin, signers) = setup_multisig(&env);
+    let user = Address::generate(&env);
+    let approvals = vec![&env, signers.get(0).unwrap()];
+    client.mint_multisig(&admin, &user, &100, &1, &approvals);
+}
+
+#[test]
+#[should_panic(expected = "T005: insufficient signers")]
+fn test_multisig_admin_op_rejected_with_unknown_signer() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, admin, signers) = setup_multisig(&env);
+    let user = Address::generate(&env);
+    let approvals = vec![
+        &env,
+        signers.get(0).unwrap(),
+        Address::generate(&env),
+    ];
+    client.mint_multisig(&admin, &user, &100, &1, &approvals);
+}
+
+#[test]
+#[should_panic(expected = "T005: insufficient signers")]
+fn test_multisig_admin_op_rejected_with_duplicate_signers() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, admin, signers) = setup_multisig(&env);
+    let user = Address::generate(&env);
+    let approvals = vec![
+        &env,
+        signers.get(0).unwrap(),
+        signers.get(0).unwrap(),
+    ];
+    client.mint_multisig(&admin, &user, &100, &1, &approvals);
+}
+
+#[test]
+#[should_panic(expected = "T006: single-key admin disabled")]
+fn test_single_key_admin_path_disabled_on_mainnet() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, admin, _signers) = setup_multisig(&env);
+    let user = Address::generate(&env);
+    // The legacy single-key mint path must be unavailable once the
+    // multi-sig policy is active (mainnet configuration).
+    client.mint(&admin, &user, &100, &1);
+}
+
+// ---------------------------------------------------------------------------
+// TOK-30 – emergency drain alignment with SEC-03
+// ---------------------------------------------------------------------------
+
+#[test]
+#[should_panic(expected = "T007: token not paused")]
+fn test_emergency_drain_requires_pause() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, admin, signers) = setup_multisig(&env);
+    let recipient = Address::generate(&env);
+    let approvals = vec![&env, signers.get(0).unwrap(), signers.get(1).unwrap()];
+    client.propose_emergency_drain(&admin, &1, &recipient, &approvals);
+    client.execute_emergency_drain(&admin, &2, &approvals);
+}
+
+#[test]
+#[should_panic(expected = "T008: no pending drain")]
+fn test_emergency_drain_requires_proposal() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, admin, signers) = setup_multisig(&env);
+    client.pause_token(&admin, &1);
+    let approvals = vec![&env, signers.get(0).unwrap(), signers.get(1).unwrap()];
+    client.execute_emergency_drain(&admin, &2, &approvals);
+}
+
+#[test]
+#[should_panic(expected = "T009: drain timelock active")]
+fn test_emergency_drain_rejected_before_timelock() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, admin, signers) = setup_multisig(&env);
+    let recipient = Address::generate(&env);
+    env.ledger().with_mut(|l| l.timestamp = 1_000);
+    client.pause_token(&admin, &1);
+    let approvals = vec![&env, signers.get(0).unwrap(), signers.get(1).unwrap()];
+    client.propose_emergency_drain(&admin, &2, &recipient, &approvals);
+    env.ledger().with_mut(|l| l.timestamp = 1_000 + 86_399);
+    client.execute_emergency_drain(&admin, &3, &approvals);
+}
+
+#[test]
+fn test_emergency_drain_full_flow() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, admin, signers) = setup_multisig(&env);
+    let recipient = Address::generate(&env);
+    let approvals = vec![&env, signers.get(0).unwrap(), signers.get(1).unwrap()];
+
+    env.ledger().with_mut(|l| l.timestamp = 1_000);
+    client.pause_token(&admin, &1);
+    assert!(client.is_paused());
+
+    client.propose_emergency_drain(&admin, &2, &recipient, &approvals);
+    let pending = client.pending_emergency_drain().unwrap();
+    assert_eq!(pending.recipient, recipient);
+    assert_eq!(pending.unlock_time, 1_000 + 86_400);
+
+    env.ledger().with_mut(|l| l.timestamp = 1_000 + 86_400);
+    let balance = client.balance(&admin);
+    client.execute_emergency_drain(&admin, &3, &approvals);
+
+    assert_eq!(client.balance(&recipient), balance);
+    assert_eq!(client.balance(&admin), 0);
+    assert_eq!(client.total_supply(), 0);
+    assert!(client.pending_emergency_drain().is_none());
+    assert!(!env.events().all().is_empty());
 }

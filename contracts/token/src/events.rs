@@ -43,3 +43,17 @@ pub fn mint(env: &Env, to: &Address, amount: i128) {
     env.events()
         .publish((symbol_short!("mint"), to.clone()), amount);
 }
+
+/// `["em_dr_prp", recipient]` → `()` — an emergency drain has been proposed.
+pub fn emergency_drain_proposed(env: &Env, recipient: &Address) {
+    env.events()
+        .publish((symbol_short!("em_dr_prp"), recipient.clone()), ());
+}
+
+/// `["em_dr_drn", recipient]` → `(token, amount)` — an emergency drain executed.
+pub fn emergency_drained(env: &Env, recipient: &Address, token: &Address, amount: i128) {
+    env.events().publish(
+        (symbol_short!("em_dr_drn"), recipient.clone()),
+        (token.clone(), amount),
+    );
+}

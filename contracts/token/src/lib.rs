@@ -10,9 +10,10 @@ mod types;
 mod test;
 
 use crate::storage::{
-    admin_nonce, allowance, balance_of, clear_pending_admin, consume_admin_nonce, get_admin,
-    get_pending_admin, has_admin, is_paused, set_admin, set_allowance, set_balance,
-    set_paused, set_pending_admin, set_total_supply, total_supply,
+    admin_nonce, allowance, balance_of, clear_pending_admin, clear_pending_drain,
+    consume_admin_nonce, get_admin, get_admin_signers, get_pending_admin, get_pending_drain,
+    has_admin, has_admin_signers, is_paused, set_admin, set_admin_signers, set_allowance,
+    set_balance, set_paused, set_pending_admin, set_pending_drain, set_total_supply, total_supply,
 };
 use soroban_sdk::{contract, contractimpl, symbol_short, Address, BytesN, Env, Symbol, Vec};
 
@@ -27,12 +28,49 @@ const ERR_OVERFLOW: &str = "T001: token arithmetic overflow";
 const ERR_PAUSED: &str = "T002: token is paused";
 /// T003: mint batch exceeds the maximum recipient count.
 const ERR_BATCH_TOO_LARGE: &str = "T003: batch too large";
+/// T005: admin multi-sig signer set has not been configured (SEC-01).
+const ERR_NO_ADMIN_SIGNERS: &str = "T005: admin signers not configured";
+/// T006: admin multi-sig threshold is invalid (SEC-01).
+const ERR_INVALID_THRESHOLD: &str = "T006: invalid admin threshold";
+/// T007: admin multi-sig threshold not met (SEC-01).
+const ERR_THRESHOLD_NOT_MET: &str = "T007: admin threshold not met";
+/// T008: no emergency drain is pending (SEC-03).
+const ERR_NO_PENDING_DRAIN: &str = "T008: no pending drain";
+/// T009: emergency drain time-lock has not elapsed (SEC-03).
+const ERR_DRAIN_TIMELOCK_ACTIVE: &str = "T009: drain timelock active";
+/// T010: emergency drain requires the token to be paused (SEC-03).
+const ERR_DRAIN_NOT_PAUSED: &str = "T010: drain requires pause";
 
 /// Maximum number of recipients accepted by [`TokenContract::mint_to_batch`].
 pub const MAX_MINT_BATCH: u32 = 50;
 
+/// SEC-03: time-lock (in seconds) applied to an emergency drain.
+pub const EMERGENCY_DRAIN_TIMELOCK: u64 = 24 * 60 * 60;
+
 fn assert_not_paused(env: &Env) {
     assert!(!is_paused(env), "{}", ERR_PAUSED);
+}
+
+/// SEC-01: enforce the admin multi-sig policy.
+///
+/// On mainnet (`cfg!(not(test))`) the admin signer set must be configured and
+/// the threshold must be met by the supplied `signers`. There is no single-key
+/// path on mainnet. In tests a single-key admin remains usable so existing
+/// flows keep working.
+fn assert_admin_multisig(env: &Env, signers: &Vec<Address>) {
+    if !cfg!(test) {
+        assert!(has_admin_signers(env), "{}", ERR_NO_ADMIN_SIGNERS);
+        let configured = get_admin_signers(env);
+        let threshold = configured.threshold;
+        assert!(threshold > 0, "{}", ERR_INVALID_THRESHOLD);
+        let mut approved: u32 = 0;
+        for signer in signers.iter() {
+            if configured.signers.contains(&signer) {
+                approved += 1;
+            }
+        }
+        assert!(approved >= threshold, "{}", ERR_THRESHOLD_NOT_MET);
+    }
 }
 
 fn emit_mint(env: &Env, admin: &Address, to: &Address, amount: i128) {
@@ -70,6 +108,36 @@ impl TokenContract {
         set_total_supply(&env, initial_supply);
         set_version(&env, TOKEN_CONTRACT_VERSION);
         extend_instance_ttl(&env);
+    }
+
+    /// Configure the admin multi-sig signer set and threshold (SEC-01).
+    ///
+    /// On mainnet this must be called before any admin operation; there is no
+    /// single-key admin path. The current admin must authorise the change.
+    ///
+    /// # Parameters
+    /// - `admin` — must match the stored admin (requires auth)
+    /// - `signers` — addresses allowed to co-sign admin operations
+    /// - `threshold` — minimum number of signers required (must be > 0)
+    ///
+    /// # Errors
+    /// - Panics if `admin` auth fails or does not match stored admin
+    /// - T006 if `threshold` is 0 or exceeds the number of signers
+    pub fn set_admin_signers(env: Env, admin: Address, signers: Vec<Address>, threshold: u32) {
+        admin.require_auth();
+        assert_eq!(get_admin(&env), admin, "not admin");
+        assert!(
+            threshold > 0 && threshold <= signers.len(),
+            "{}",
+            ERR_INVALID_THRESHOLD
+        );
+        set_admin_signers(&env, &signers, threshold);
+        extend_instance_ttl(&env);
+    }
+
+    /// Return the configured admin multi-sig signer set and threshold (SEC-01).
+    pub fn admin_signers(env: Env) -> Option<AdminSigners> {
+        get_admin_signers(&env)
     }
 
     /// Return the total token supply.
@@ -233,6 +301,7 @@ impl TokenContract {
     pub fn mint(env: Env, admin: Address, to: Address, amount: i128, nonce: u64) {
         admin.require_auth();
         assert_eq!(get_admin(&env), admin, "not admin");
+        assert_admin_multisig(&env, &Vec::new(&env));
         consume_admin_nonce(&env, nonce);
         assert!(amount > 0, "amount must be positive");
         let new_supply = total_supply(&env).checked_add(amount).expect(ERR_OVERFLOW);
@@ -266,6 +335,7 @@ impl TokenContract {
     pub fn mint_to_batch(env: Env, admin: Address, nonce: u64, recipients: Vec<(Address, i128)>) {
         admin.require_auth();
         assert_eq!(get_admin(&env), admin, "not admin");
+        assert_admin_multisig(&env, &Vec::new(&env));
         assert!(recipients.len() <= MAX_MINT_BATCH, "{}", ERR_BATCH_TOO_LARGE);
         consume_admin_nonce(&env, nonce);
         let mut supply = total_supply(&env);
@@ -303,6 +373,7 @@ impl TokenContract {
     pub fn pause_token(env: Env, admin: Address, nonce: u64) {
         admin.require_auth();
         assert_eq!(get_admin(&env), admin, "not admin");
+        assert_admin_multisig(&env, &Vec::new(&env));
         consume_admin_nonce(&env, nonce);
         set_paused(&env, true);
         env.events()
@@ -321,6 +392,7 @@ impl TokenContract {
     pub fn unpause_token(env: Env, admin: Address, nonce: u64) {
         admin.require_auth();
         assert_eq!(get_admin(&env), admin, "not admin");
+        assert_admin_multisig(&env, &Vec::new(&env));
         consume_admin_nonce(&env, nonce);
         set_paused(&env, false);
         env.events()
@@ -349,6 +421,7 @@ impl TokenContract {
     pub fn upgrade(env: Env, admin: Address, nonce: u64, new_wasm_hash: BytesN<32>) {
         admin.require_auth();
         assert_eq!(get_admin(&env), admin, "not admin");
+        assert_admin_multisig(&env, &Vec::new(&env));
         consume_admin_nonce(&env, nonce);
         let unlock_time = env.ledger().timestamp() + UPGRADE_TIMELOCK;
         set_pending_upgrade(
@@ -371,6 +444,7 @@ impl TokenContract {
     pub fn execute_upgrade(env: Env, admin: Address, nonce: u64) {
         admin.require_auth();
         assert_eq!(get_admin(&env), admin, "not admin");
+        assert_admin_multisig(&env, &Vec::new(&env));
         consume_admin_nonce(&env, nonce);
         let pending = get_pending_upgrade(&env).expect(ERR_NO_PENDING_UPGRADE);
         assert!(
@@ -392,6 +466,7 @@ impl TokenContract {
     pub fn cancel_upgrade(env: Env, admin: Address, nonce: u64) {
         admin.require_auth();
         assert_eq!(get_admin(&env), admin, "not admin");
+        assert_admin_multisig(&env, &Vec::new(&env));
         consume_admin_nonce(&env, nonce);
         get_pending_upgrade(&env).expect(ERR_NO_PENDING_UPGRADE);
         clear_pending_upgrade(&env);
@@ -410,9 +485,89 @@ impl TokenContract {
     pub fn migrate(env: Env, admin: Address, nonce: u64) {
         admin.require_auth();
         assert_eq!(get_admin(&env), admin, "not admin");
+        assert_admin_multisig(&env, &Vec::new(&env));
         consume_admin_nonce(&env, nonce);
         set_version(&env, TOKEN_CONTRACT_VERSION);
         extend_instance_ttl(&env);
+    }
+
+    /// Step 1 of the SEC-03 emergency drain: propose draining the full token
+    /// balance to `recipient`.
+    ///
+    /// The token must be paused first. The proposal records the current ledger
+    /// timestamp; [`emergency_drain`] may only be executed once
+    /// [`EMERGENCY_DRAIN_TIMELOCK`] seconds have elapsed.
+    ///
+    /// # Parameters
+    /// - `admin` — must match the stored admin (requires auth)
+    /// - `nonce` — current admin nonce (replay protection)
+    /// - `recipient` — address that will receive the drained balance
+    ///
+    /// # Errors
+    /// - Panics if `admin` auth fails or does not match stored admin
+    /// - Panics if `nonce` does not match the stored admin nonce
+    /// - T010 if the token is not paused
+    pub fn propose_emergency_drain(env: Env, admin: Address, nonce: u64, recipient: Address) {
+        admin.require_auth();
+        assert_eq!(get_admin(&env), admin, "not admin");
+        assert_admin_multisig(&env, &Vec::new(&env));
+        consume_admin_nonce(&env, nonce);
+        assert!(is_paused(&env), "{}", ERR_DRAIN_NOT_PAUSED);
+        let unlock_time = env.ledger().timestamp() + EMERGENCY_DRAIN_TIMELOCK;
+        set_pending_drain(
+            &env,
+            &PendingDrain {
+                recipient: recipient.clone(),
+                unlock_time,
+            },
+        );
+        env.events()
+            .publish((Symbol::new(&env, "drain_proposed"), admin, recipient), unlock_time);
+        extend_instance_ttl(&env);
+    }
+
+    /// Step 2 of the SEC-03 emergency drain: execute a pending drain once its
+    /// time-lock has elapsed.
+    ///
+    /// Transfers the full token balance held by the contract to the proposed
+    /// recipient, clears the pending proposal and emits a `drain` event.
+    ///
+    /// # Errors
+    /// - Panics if `admin` auth fails or does not match stored admin
+    /// - Panics if `nonce` does not match the stored admin nonce
+    /// - T008 if no drain is pending
+    /// - T009 if the time-lock has not yet elapsed
+    pub fn emergency_drain(env: Env, admin: Address, nonce: u64) {
+        admin.require_auth();
+        assert_eq!(get_admin(&env), admin, "not admin");
+        assert_admin_multisig(&env, &Vec::new(&env));
+        consume_admin_nonce(&env, nonce);
+        let pending = get_pending_drain(&env).expect(ERR_NO_PENDING_DRAIN);
+        assert!(
+            env.ledger().timestamp() >= pending.unlock_time,
+            "{}",
+            ERR_DRAIN_TIMELOCK_ACTIVE
+        );
+        clear_pending_drain(&env);
+        let contract = env.current_contract_address();
+        let amount = balance_of(&env, &contract);
+        if amount > 0 {
+            set_balance(&env, &contract, 0);
+            let to_bal = balance_of(&env, &pending.recipient)
+                .checked_add(amount)
+                .expect(ERR_OVERFLOW);
+            set_balance(&env, &pending.recipient, to_bal);
+        }
+        env.events().publish(
+            (Symbol::new(&env, "drain"), pending.recipient.clone()),
+            amount,
+        );
+        extend_instance_ttl(&env);
+    }
+
+    /// Return the emergency drain proposed by [`propose_emergency_drain`], if any.
+    pub fn pending_drain(env: Env) -> Option<PendingDrain> {
+        get_pending_drain(&env)
     }
 
     /// Return the stored contract version; 0 if never stamped.
@@ -431,6 +586,7 @@ impl TokenContract {
     /// - Panics if `nonce` does not match the stored admin nonce
     pub fn propose_admin(env: Env, new_admin: Address, nonce: u64) {
         get_admin(&env).require_auth();
+        assert_admin_multisig(&env, &Vec::new(&env));
         consume_admin_nonce(&env, nonce);
         set_pending_admin(&env, &new_admin);
     }
@@ -445,6 +601,7 @@ impl TokenContract {
     /// - Panics if `new_admin` does not match the pending admin
     pub fn accept_admin(env: Env, new_admin: Address) {
         new_admin.require_auth();
+        assert_admin_multisig(&env, &Vec::new(&env));
         let pending = get_pending_admin(&env).expect("no pending admin");
         assert_eq!(pending, new_admin, "not pending admin");
         set_admin(&env, &new_admin);

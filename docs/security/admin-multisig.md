@@ -1,6 +1,6 @@
-# Admin Multisig Setup for Mainnet (SEC-01 / SEC-30)
+# Admin Multisig Setup for Mainnet (SEC-01 / SEC-30 / TOK-29)
 
-**Issue:** #30, #268  
+**Issue:** #30, #268, #495  
 **Status:** Design  
 **Priority:** Critical  
 **Dependency:** SC-01 (LOW-02 fix — `initialize` guard) should be merged first
@@ -21,6 +21,31 @@ configuration**. This document covers the recommended setup, two approaches (Ste
 multisig and a deployed multisig contract), the onboarding checklist for transferring admin to
 a multisig, the operations runbook for admin calls, and the steps to verify admin operations
 work through multisig auth on testnet before mainnet deployment.
+
+### Scope: Stream and Token Contracts Share One Governance Model
+
+As of **TOK-29 (#495)**, the token contract admin is aligned with the stream contract under
+this same SEC-01 policy. Both contracts are governed by the **same mainnet multisig
+requirement**: a minimum 2-of-3 signer configuration, with **no single-key admin path on
+mainnet**.
+
+The policy applies to the token contract's admin operations, including:
+
+- `mint` (admin-controlled issuance)
+- `burn` (admin-controlled burn)
+- `pause` / `unpause` (token transfers halted/resumed)
+- `set_admin` / admin transfer
+- `set_minter` / minter role changes
+- Any token contract upgrade / WASM replacement
+
+Every token admin entry point must be authorized by the multisig admin address and therefore
+requires the 2-of-3 signing flow described below. A single signer must never be able to submit
+a token admin transaction on mainnet.
+
+The stream contract's admin operations (`pause_contract`, `unpause_contract`,
+`set_min_deposit`, and contract upgrade / WASM replacement) are gated identically. Because both
+contracts use the same admin address and the same Stellar account thresholds, a single
+multisig configuration covers both.
 
 ---
 
@@ -109,6 +134,13 @@ stellar contract invoke --id <STREAM_ID> --source <DEPLOYER_KEY> --network mainn
   -- initialize --admin <MULTISIG_CONTRACT_ADDRESS>
 ```
 
+The same applies to the token contract — pass the multisig address as the token admin:
+
+```bash
+stellar contract invoke --id <TOKEN_ID> --source <DEPLOYER_KEY> --network mainnet \
+  -- initialize --admin <MULTISIG_CONTRACT_ADDRESS>
+```
+
 ---
 
 ## Mainnet Onboarding Checklist
@@ -124,20 +156,25 @@ multisig. Do not skip the on-chain verification step.
 - [ ] **3. Transfer admin.** Point the contract admin at the multisig account. If the contract
   is not yet initialized, pass the multisig address directly to `initialize --admin`. If it is
   already initialized with a single-key admin, use the contract's admin-transfer path (or
-  re-initialize per the upgrade procedure) so the new admin is the multisig address.
-- [ ] **4. Verify the transfer on-chain.** Query the contract's stored admin and confirm it
+  re-initialize per the upgrade procedure) so the new admin is the multisig address. Do this
+  for **both** the stream contract and the token contract so they share the same admin.
+- [ ] **4. Verify the transfer on-chain.** Query each contract's stored admin and confirm it
   equals the multisig account address:
 
   ```bash
   stellar contract invoke --id <STREAM_ID> --network mainnet \
     -- get_admin
+
+  stellar contract invoke --id <TOKEN_ID> --network mainnet \
+    -- get_admin
   ```
 
-  The returned address must match `<ADMIN_ACCOUNT>` (or `<MULTISIG_CONTRACT_ADDRESS>` for the
+  The returned addresses must match `<ADMIN_ACCOUNT>` (or `<MULTISIG_CONTRACT_ADDRESS>` for the
   contract-based approach).
-- [ ] **5. Exercise an admin call through multisig.** Perform a low-risk admin operation
-  (e.g., a no-op `set_min_deposit` to its current value) using the 2-of-3 signing flow and
-  confirm it succeeds only with two signatures.
+- [ ] **5. Exercise an admin call through multisig.** Perform a low-risk admin operation on
+  each contract (e.g., a no-op `set_min_deposit` to its current value on the stream contract,
+  and a no-op `set_minter` to the current minter on the token contract) using the 2-of-3
+  signing flow and confirm it succeeds only with two signatures.
 - [ ] **6. Record the configuration.** Update `docs/security/threat-model.md` (RR-01) with the
   actual signer set and threshold used.
 
@@ -159,8 +196,14 @@ never be able to submit an admin transaction.
 5. **Confirm.** Verify the operation took effect on-chain (e.g., re-query contract state) and
    record the transaction hash in the operations log.
 
-Applies to every admin entry point: `pause_contract`, `unpause_contract`, `set_min_deposit`,
-and any contract upgrade / WASM replacement.
+Applies to every admin entry point on both contracts:
+
+- **Stream contract:** `pause_contract`, `unpause_contract`, `set_min_deposit`, and any
+  contract upgrade / WASM replacement.
+- **Token contract:** `mint`, `burn`, `pause`, `unpause`, `set_admin`, `set_minter`, and any
+  contract upgrade / WASM replacement.
+
+There is **no single-key admin path on mainnet** for either contract.
 
 ---
 
@@ -196,6 +239,32 @@ fn test_admin_operations_via_multisig() {
 
 On testnet, run the full onboarding checklist above against a testnet multisig account and
 confirm that admin calls succeed with 2 signatures and fail with 1 before promoting to mainnet.
+This must be verified for both the stream contract and the token contract, since both share the
+same multisig policy.
+
+### In `contracts/token/src/test.rs`
+
+```rust
+#[test]
+fn test_token_admin_operations_via_multisig() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    // The token admin is the same multisig account used by the stream contract.
+    // mock_all_auths() approves all auth checks, verifying the admin auth path is wired.
+    // Real multisig threshold testing requires the Stellar integration test harness.
+
+    let admin = Address::generate(&env);
+    let contract_id = env.register_contract(None, crate::TokenContract);
+    let client = crate::TokenContractClient::new(&env, &contract_id);
+
+    client.initialize(&admin);
+
+    // Confirm token admin operations require admin auth
+    let auths = env.auths();
+    assert!(auths.iter().any(|(addr, _)| *addr == admin));
+}
+```
 
 ---
 
@@ -209,8 +278,9 @@ export STELLAR_ADMIN_ADDRESS="G..."   # multisig account public key
 export STELLAR_SOURCE_ACCOUNT="G..." # deployer key that funds the init transaction
 ```
 
-The `STELLAR_ADMIN_ADDRESS` is passed directly to `initialize --admin`, so any Stellar account
-address (including multisig accounts) is valid.
+The `STELLAR_ADMIN_ADDRESS` is passed directly to `initialize --admin` for both the stream and
+token contracts, so any Stellar account address (including multisig accounts) is valid and the
+same multisig admin governs both.
 
 ---
 
@@ -235,4 +305,7 @@ and threshold used.
 - [x] `init-testnet.sh` compatible with a multisig admin address (no changes needed — it already accepts any address via `STELLAR_ADMIN_ADDRESS`)
 - [x] Deploy scripts include multisig signer setup instructions (see above)
 - [x] Threat model updated to reflect RR-01 mitigation (see below)
-- [ ] Test demonstrating admin operations via multisig auth (Soroban test env stub above; full integration test requires testnet)
+- [x] Token contract admin aligned with the same mainnet multisig policy as the stream contract (TOK-29 / #495)
+- [x] Token admin operations (`mint`, `burn`, `pause`, `unpause`, `set_admin`, `set_minter`, upgrade) gated by the multisig policy
+- [x] No single-key admin path on mainnet for either contract
+- [ ] Test demonstrating admin operations via multisig auth (Soroban test env stubs above for stream and token; full integration test requires testnet)

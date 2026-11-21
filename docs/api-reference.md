@@ -780,6 +780,11 @@ Before applying the new rate, any tokens accrued since the last withdrawal are s
 - Panics if stream is not Active or Paused
 - E001 if `new_rate` ≤ 0
 - E008 if `new_rate` > 1,000,000,000
+- E036 if the stream is a linear vest stream. Linear vest streams use a vest
+  schedule (`total_grant` over `vest_period`, see `create_linear_vest`) rather
+  than a per-second rate, so their rate cannot be changed. This is a clearer
+  error for the same restriction that previously rejected linear vest streams
+  with a generic payroll-stream assertion; no other behaviour changes.
 
 **Emitted event:** `rate_updated(stream_id, old_rate, new_rate)`
 
@@ -870,6 +875,13 @@ Employer cancels a stream. The employee receives all earned tokens; the employer
 - Panics if stream is already Cancelled or Exhausted
 
 **Emitted event:** `stream_cancelled` (enriched — see [Events](#events) section)
+
+**Refund rounding (dust):** the refund is computed as `deposit - withdrawn - claimable_paid`
+using the same integer accrual as `claimable`, so any sub-token dust left by
+rounding is returned to the employer rather than locked in the contract. The
+employee always receives the full claimable amount they earned; dust never
+reduces or blocks employee funds, and no funds remain permanently locked after
+cancellation.
 
 **Example:**
 ```bash
@@ -1964,6 +1976,7 @@ Keep this table in sync with that file (see [CONTRIBUTING.md](../CONTRIBUTING.md
 | E009 | `ERR_BAD_NONCE` | Invalid admin nonce | `propose_admin`, `pause_contract`, `unpause_contract`, `set_min_deposit`, `set_protocol_fee`, `upgrade`, `propose_upgrade`, `execute_upgrade`, `cancel_upgrade` | Read the current value with `admin_nonce` and pass it as `nonce` |
 | E029 | `ERR_BATCH_TOO_LARGE` | Batch contains more than 50 streams | `create_streams_batch`, `cancel_streams_batch` | Split the operation into batches of at most 50 streams |
 | E030 | `ERR_INVALID_STOP_TIME` | Nonzero stop time precedes last withdrawal | `update_stop_time` | Use 0 or a timestamp at/after `last_withdraw_time` |
+| E036 | `ERR_LINEAR_VEST_NO_RATE` | Rate cannot be changed on a linear vest stream | `update_rate` | Linear vest streams use a vest schedule, not a rate; create a new stream instead |
 | T001 | `ERR_OVERFLOW` (token) | Token arithmetic overflow | Token `mint`, `mint_to_batch`, `transfer`, `transfer_from` | Use smaller amounts |
 | T002 | `ERR_PAUSED` (token) | Token is paused | Token `transfer`, `transfer_from`, `burn`, `burn_from` | Wait for the admin to call `unpause_token` |
 | T003 | `ERR_BATCH_TOO_LARGE` (token) | More than 50 recipients | Token `mint_to_batch` | Split into batches of at most 50 |

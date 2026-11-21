@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
-use crate::types::{PendingUpgrade, TokenDataKey};
-use soroban_sdk::{Address, Env};
+use crate::types::{PendingDrain, PendingUpgrade, TokenDataKey};
+use soroban_sdk::{Address, Env, Vec};
 
 /// TOK-16: extend TTL when remaining TTL drops below ~1 year.
 pub const TTL_THRESHOLD: u32 = 6_307_200;
@@ -10,6 +10,9 @@ pub const TTL_EXTEND_TO: u32 = 12_614_400;
 
 /// TOK-18: 24-hour upgrade time-lock, in seconds.
 pub const UPGRADE_TIMELOCK: u64 = 86_400;
+
+/// TOK-30: 24-hour emergency drain time-lock, in seconds.
+pub const DRAIN_TIMELOCK: u64 = 86_400;
 
 pub fn extend_instance_ttl(env: &Env) {
     env.storage()
@@ -139,4 +142,55 @@ pub fn is_paused(env: &Env) -> bool {
 
 pub fn set_paused(env: &Env, paused: bool) {
     env.storage().instance().set(&TokenDataKey::Paused, &paused);
+}
+
+/// TOK-29: returns the configured admin multi-sig signer set, if any.
+pub fn get_admin_signers(env: &Env) -> Option<Vec<Address>> {
+    env.storage()
+        .instance()
+        .get(&TokenDataKey::AdminSigners)
+}
+
+pub fn set_admin_signers(env: &Env, signers: &Vec<Address>) {
+    env.storage()
+        .instance()
+        .set(&TokenDataKey::AdminSigners, signers);
+}
+
+pub fn clear_admin_signers(env: &Env) {
+    env.storage().instance().remove(&TokenDataKey::AdminSigners);
+}
+
+/// TOK-29: returns the admin multi-sig threshold, if configured.
+pub fn get_admin_threshold(env: &Env) -> Option<u32> {
+    env.storage()
+        .instance()
+        .get(&TokenDataKey::AdminThreshold)
+}
+
+pub fn set_admin_threshold(env: &Env, threshold: u32) {
+    env.storage()
+        .instance()
+        .set(&TokenDataKey::AdminThreshold, &threshold);
+}
+
+pub fn clear_admin_threshold(env: &Env) {
+    env.storage()
+        .instance()
+        .remove(&TokenDataKey::AdminThreshold);
+}
+
+/// TOK-30: returns the pending emergency drain proposal, if any.
+pub fn get_pending_drain(env: &Env) -> Option<PendingDrain> {
+    env.storage().instance().get(&TokenDataKey::PendingDrain)
+}
+
+pub fn set_pending_drain(env: &Env, drain: &PendingDrain) {
+    env.storage()
+        .instance()
+        .set(&TokenDataKey::PendingDrain, drain);
+}
+
+pub fn clear_pending_drain(env: &Env) {
+    env.storage().instance().remove(&TokenDataKey::PendingDrain);
 }

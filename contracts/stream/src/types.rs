@@ -306,6 +306,10 @@ pub const ERR_NOT_RECEIPT_OWNER: &str = "E030: caller does not hold the stream r
 pub const ERR_TEMPLATE_NOT_FOUND: &str = "E031: template not found";
 /// E035: `cliff_time` is after `stop_time` (PROD-17).
 pub const ERR_CLIFF_AFTER_STOP: &str = "E035: cliff_time must be <= stop_time";
+/// E036: `update_rate` was called on a linear vest stream, which uses a vest
+/// schedule rather than a per-second rate (issue #484).
+pub const ERR_LINEAR_VEST_NO_RATE: &str =
+    "E036: linear vest streams use a vest schedule, not a rate";
 /// Maximum number of streams in one batch call (create/cancel/pause/resume).
 pub const MAX_BATCH_SIZE: u32 = 50;
 

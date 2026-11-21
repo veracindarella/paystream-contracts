@@ -3,8 +3,9 @@
 #![deny(missing_docs)]
 
 use crate::types::{
-    ERR_AMOUNT_NOT_POSITIVE, ERR_BELOW_MIN_DEPOSIT, ERR_CLIFF_AFTER_STOP, ERR_INVALID_RATE, ERR_STOP_TIME_PAST,
-    ERR_ZERO_DEPOSIT, ERR_ZERO_RATE, ERR_STOP_TIME_TOO_FAR, MAX_STOP_TIME_OFFSET,
+    ERR_AMOUNT_NOT_POSITIVE, ERR_BELOW_MIN_DEPOSIT, ERR_CLIFF_AFTER_STOP, ERR_INVALID_RATE,
+    ERR_LINEAR_VEST_NO_RATE, ERR_STOP_TIME_PAST, ERR_ZERO_DEPOSIT, ERR_ZERO_RATE,
+    ERR_STOP_TIME_TOO_FAR, MAX_STOP_TIME_OFFSET,
 };
 use soroban_sdk::Address;
 
@@ -76,6 +77,20 @@ pub fn validate_top_up(amount: i128) {
 pub fn validate_rate(rate: i128) {
     assert!(rate > 0, "{}", ERR_ZERO_RATE);
     assert!(rate <= MAX_RATE_PER_SECOND, "{}", ERR_INVALID_RATE);
+}
+
+/// Validate that a stream supports rate updates (issue #484).
+///
+/// Linear vest streams are driven by a vest schedule rather than a rate, so
+/// `update_rate` is not applicable to them. This helper returns a clear error
+/// for that case instead of the generic payroll-stream assertion.
+///
+/// # Panics
+/// - E033 if the stream is a `LinearVest` stream (it uses a vest schedule, not a rate)
+/// - if the stream is not a payroll stream (generic assertion)
+pub fn validate_rate_update_stream(is_linear_vest: bool, is_payroll_stream: bool) {
+    assert!(!is_linear_vest, "{}", ERR_LINEAR_VEST_NO_RATE);
+    assert!(is_payroll_stream, "stream is not a payroll stream");
 }
 
 /// Validate split stream beneficiary configuration.
