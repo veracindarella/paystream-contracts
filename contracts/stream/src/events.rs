@@ -190,6 +190,26 @@ pub fn split_stream_created(env: &Env, id: u64, employer: &Address, rate: i128) 
     );
 }
 
+/// Emitted by `create_split_vest` when creating a multi-beneficiary linear
+/// vest grant (SC-114). Mirrors `split_stream_created` but with a distinct
+/// topic so indexers can discriminate vest splits from payroll splits.
+pub fn split_vest_created(env: &Env, id: u64, employer: &Address, rate: i128) {
+    env.events().publish(
+        (symbol_short!("v1"), symbol_short!("splt_vst"), id),
+        (employer.clone(), rate),
+    );
+}
+
+/// Emitted by `update_stream_metadata` when a stream's bounded metadata map
+/// is replaced (SC-99). Data carries the number of entries stored so
+/// off-chain indexers can track categorization without re-reading state.
+pub fn metadata_updated(env: &Env, id: u64, entry_count: u32) {
+    env.events().publish(
+        (symbol_short!("v1"), symbol_short!("meta_upd"), id),
+        entry_count,
+    );
+}
+
 /// Emitted by `emit_platform_stats` to provide periodic analytics checkpoints (PROD-23).
 /// Enables efficient indexing of aggregated metrics without full ledger scans.
 pub fn platform_stats(

@@ -1,7 +1,25 @@
-use soroban_sdk::{contracttype, Address, Env};
+use soroban_sdk::{contracttype, Address, Env, Map, Symbol};
 
 /// Minimum delay between proposing and executing an emergency drain (24 hours).
 pub const DRAIN_TIMELOCK_SECONDS: u64 = 86_400;
+
+/// Default maximum number of items processed by a single batch entrypoint.
+pub const DEFAULT_MAX_BATCH_SIZE: u32 = 50;
+
+/// Lower bound for the admin-configurable batch size.
+pub const MIN_MAX_BATCH_SIZE: u32 = 1;
+
+/// Upper bound for the admin-configurable batch size.
+pub const MAX_MAX_BATCH_SIZE: u32 = 200;
+
+/// Maximum number of entries allowed in a stream's metadata map.
+pub const MAX_METADATA_ENTRIES: u32 = 8;
+
+/// Error returned when a metadata map exceeds `MAX_METADATA_ENTRIES`.
+pub const ERR_METADATA_TOO_LARGE: u32 = 0x1003;
+
+/// Error returned when a configured batch size is outside the allowed bounds.
+pub const ERR_MAX_BATCH_SIZE_OUT_OF_BOUNDS: u32 = 0x1004;
 
 /// Error returned when an emergency drain is attempted before the time-lock elapses.
 pub const ERR_DRAIN_TIMELOCK_ACTIVE: u32 = 0x1001;
@@ -28,6 +46,58 @@ pub fn get_drain_proposal(env: &Env) -> Option<EmergencyDrainProposal> {
 
 pub fn clear_drain_proposal(env: &Env) {
     env.storage().instance().remove(&DRAIN_PROPOSAL_KEY);
+}
+
+/// Persists a stream's bounded metadata map in persistent storage, extending its TTL.
+///
+/// Panics with `ERR_METADATA_TOO_LARGE` when the map has more than
+/// `MAX_METADATA_ENTRIES` entries.
+pub fn set_stream_metadata(env: &Env, stream_id: u64, metadata: &Map<Symbol, Symbol>) {
+    if metadata.len() > MAX_METADATA_ENTRIES {
+        panic!("{}", ERR_METADATA_TOO_LARGE);
+    }
+    let key = crate::DataKey::StreamMetadata(stream_id);
+    env.storage().persistent().set(&key, metadata);
+    env.storage().persistent().extend_ttl(
+        &key,
+        crate::PERSISTENT_TTL_THRESHOLD,
+        crate::PERSISTENT_TTL_EXTEND_TO,
+    );
+}
+
+/// Returns the metadata map stored for `stream_id`, if any.
+pub fn get_stream_metadata(env: &Env, stream_id: u64) -> Option<Map<Symbol, Symbol>> {
+    let key = crate::DataKey::StreamMetadata(stream_id);
+    let metadata: Option<Map<Symbol, Symbol>> = env.storage().persistent().get(&key);
+    if metadata.is_some() {
+        env.storage().persistent().extend_ttl(
+            &key,
+            crate::PERSISTENT_TTL_THRESHOLD,
+            crate::PERSISTENT_TTL_EXTEND_TO,
+        );
+    }
+    metadata
+}
+
+/// Stores the admin-configurable maximum batch size in instance storage.
+///
+/// Panics with `ERR_MAX_BATCH_SIZE_OUT_OF_BOUNDS` when `max` is outside
+/// `MIN_MAX_BATCH_SIZE..=MAX_MAX_BATCH_SIZE`.
+pub fn set_max_batch_size(env: &Env, max: u32) {
+    if max < MIN_MAX_BATCH_SIZE || max > MAX_MAX_BATCH_SIZE {
+        panic!("{}", ERR_MAX_BATCH_SIZE_OUT_OF_BOUNDS);
+    }
+    env.storage()
+        .instance()
+        .set(&crate::DataKey::MaxBatchSize, &max);
+}
+
+/// Returns the configured maximum batch size, defaulting to `DEFAULT_MAX_BATCH_SIZE`.
+pub fn get_max_batch_size(env: &Env) -> u32 {
+    env.storage()
+        .instance()
+        .get(&crate::DataKey::MaxBatchSize)
+        .unwrap_or(DEFAULT_MAX_BATCH_SIZE)
 }
 
 /// Returns true when at least `DRAIN_TIMELOCK_SECONDS` have elapsed since the proposal.

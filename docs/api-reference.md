@@ -335,9 +335,133 @@ Return the grant amount, vest duration, and optional cliff for a linear vest. Re
 
 ---
 
+### `create_split_vest`
+
+Employer creates a linear vest grant whose claimable tokens are split between a
+primary beneficiary and one or more additional beneficiaries. Vesting follows the
+same rules as `create_linear_vest` (optional cliff, paused time excluded), but each
+`withdraw` pays out the caller's share of the claimable amount according to the
+configured split. Split rules match `create_split_stream`: shares are expressed in
+basis points and must sum to exactly 10,000 (100%).
+
+**Caller:** Employer
+
+| Parameter | Type | Description |
+|---|---|---|
+| `employer` | `Address` | Employer funding the grant |
+| `employee` | `Address` | Primary grant recipient |
+| `token_address` | `Address` | SEP-41 token contract address |
+| `total_grant` | `i128` | Gross grant amount (must meet minimum deposit) |
+| `vest_period` | `u64` | Vesting duration in seconds; must be greater than zero |
+| `cliff` | `Option<u64>` | Optional cliff duration in seconds; must not exceed `vest_period` |
+| `splits` | `Vec<(Address, u32)>` | Beneficiary / share pairs in basis points; shares must sum to 10,000 |
+
+**Returns:** `u64` — the new stream ID
+
+**Errors:**
+- Same validations as `create_linear_vest` (E002, E007, E035, paused contract)
+- Panics if `splits` is empty, contains duplicate beneficiaries, or shares do not sum to 10,000
+- Panics if any share is 0
+
+**Example:**
+```bash
+stellar contract invoke --id <STREAM_ID> --source <EMPLOYER_KEY> --network testnet \
+  -- create_split_vest --employer <EMPLOYER_ADDRESS> \
+  --employee <EMPLOYEE_ADDRESS> --token_address <TOKEN_ID> \
+  --total_grant 1000000 --vest_period 31536000 --cliff 7776000 \
+  --splits '[["<BENEFICIARY_1>",6000],["<BENEFICIARY_2>",4000]]'
+```
+
+---
+
+### `update_stream_metadata`
+
+Employer sets or replaces the bounded metadata map attached to a stream (SC-99).
+Metadata is intended for payroll categorization (for example `department` or
+`cost center`) and is stored in persistent storage keyed by stream ID.
+
+**Caller:** Employer
+
+| Parameter | Type | Description |
+|---|---|---|
+| `employer` | `Address` | Must match the stream's employer (requires auth) |
+| `stream_id` | `u64` | ID of the stream to update |
+| `metadata` | `Map<Symbol, String>` | Metadata entries; at most `MAX_METADATA_ENTRIES` (8) entries, each key ≤ 32 chars and value ≤ 64 chars |
+
+**Returns:** nothing
+
+**Errors:**
+- Panics if stream not found (E015)
+- Panics if caller is not the stream's employer (E018)
+- Panics if `metadata` contains more than 8 entries or any key/value exceeds the length cap
+
+**Example:**
+```bash
+stellar contract invoke --id <STREAM_ID> --source <EMPLOYER_KEY> --network testnet \
+  -- update_stream_metadata --employer <EMPLOYER_ADDRESS> --stream_id 1 \
+  --metadata '{"department":"Engineering","cost_center":"CC-42"}'
+```
+
+---
+
+### `get_stream_metadata`
+
+Return the metadata map attached to a stream. Returns an empty map when no
+metadata has been set, so callers can query unconditionally.
+
+**Caller:** Anyone
+
+| Parameter | Type | Description |
+|---|---|---|
+| `stream_id` | `u64` | ID of the stream to query |
+
+**Returns:** `Map<Symbol, String>` — metadata entries (empty if unset)
+
+**Errors:**
+- Panics if stream not found (E015)
+
+**Example:**
+```bash
+stellar contract invoke --id <STREAM_ID> --source <ANY_KEY> --network testnet \
+  -- get_stream_metadata --stream_id 1
+```
+
+---
+
+### `set_max_batch_size`
+
+Admin sets the maximum number of entries accepted by batch entrypoints
+(`create_streams_batch`, `cancel_streams_batch`, `pause_stream_batch`,
+`resume_stream_batch`, `get_streams_batch`, `claimable_batch`). The value is
+bounded to `1..=200` and defaults to 50 when never configured (SC-115).
+
+**Caller:** Admin
+
+| Parameter | Type | Description |
+|---|---|---|
+| `admin` | `Address` | Must equal the stored admin |
+| `nonce` | `u64` | Current admin nonce (replay protection) |
+| `max` | `u32` | New maximum batch size, from 1 to 200 inclusive |
+
+**Returns:** nothing
+
+**Errors:**
+- Panics if `admin` auth fails or does not match stored admin
+- Panics if `nonce` is wrong (E009)
+- Panics if `max` is 0 or greater than 200
+
+**Example:**
+```bash
+stellar contract invoke --id <STREAM_ID> --source <ADMIN_KEY> --network testnet \
+  -- set_max_batch_size --admin <ADMIN_ADDRESS> --nonce 4 --max 100
+```
+
+---
+
 ### `create_streams_batch`
 
 Employer creates multiple salary streams atomically. All streams succeed or all revert.
+=======
 
 **Caller:** Employer
 
@@ -359,9 +483,9 @@ Employer creates multiple salary streams atomically. All streams succeed or all 
 
 **Returns:** `Vec<u64>` — list of new stream IDs in the same order as `params`
 
-**Limit:** 50 streams per call
+**Limit:** Up to the configured maximum batch size per call (default 50, tunable via `set_max_batch_size` in the range 1–200)
 
-**Errors:** Same per-stream validations as `create_stream`, including protocol fee deduction; panics if `params` is empty or contains more than 50 entries (E029)
+**Errors:** Same per-stream validations as `create_stream`, including protocol fee deduction; panics if `params` is empty or contains more entries than the configured maximum batch size (E029)
 
 **Example:**
 ```bash
@@ -688,12 +812,12 @@ event is emitted for each stream on success.
 | Parameter | Type | Description |
 |---|---|---|
 | `employer` | `Address` | Must own every stream (requires auth once) |
-| `stream_ids` | `Vec<u64>` | IDs of 1–50 streams to pause |
+| `stream_ids` | `Vec<u64>` | IDs of 1 to the configured maximum batch size (default 50) streams to pause |
 
 **Returns:** nothing
 
 **Errors:**
-- Panics if `stream_ids` is empty or contains more than 50 entries (E029)
+- Panics if `stream_ids` is empty or contains more entries than the configured maximum batch size (E029)
 - Panics if any stream is not found, does not belong to `employer`, or is not Active
 
 **Example:**
@@ -742,12 +866,12 @@ event is emitted for each stream.
 | Parameter | Type | Description |
 |---|---|---|
 | `employer` | `Address` | Must own every stream (requires auth once) |
-| `stream_ids` | `Vec<u64>` | IDs of 1–50 streams to resume |
+| `stream_ids` | `Vec<u64>` | IDs of 1 to the configured maximum batch size (default 50) streams to resume |
 
 **Returns:** nothing
 
 **Errors:**
-- Panics if `stream_ids` is empty or contains more than 50 entries (E029)
+- Panics if `stream_ids` is empty or contains more entries than the configured maximum batch size (E029)
 - Panics if any stream is not found, does not belong to `employer`, or is not Paused
 
 **Example:**
@@ -888,13 +1012,13 @@ Employer cancels multiple streams atomically in a single transaction. All cancel
 | Parameter | Type | Description |
 |---|---|---|
 | `employer` | `Address` | Must own every stream in the list (requires auth once) |
-| `stream_ids` | `Vec<u64>` | IDs of 1–50 streams to cancel |
+| `stream_ids` | `Vec<u64>` | IDs of 1 to the configured maximum batch size (default 50) streams to cancel |
 
 **Returns:** nothing
 
 **Errors:**
 - Panics if `stream_ids` is empty
-- Panics with E029 if `stream_ids` contains more than 50 entries
+- Panics with E029 if `stream_ids` contains more entries than the configured maximum batch size
 - Panics if any stream is not found
 - Panics if any stream does not belong to `employer`
 - Panics if any stream is already Cancelled or Exhausted (reverts entire batch)
@@ -950,18 +1074,18 @@ stellar contract invoke --id <STREAM_ID> --source <ANY_KEY> --network testnet \
 
 ### `get_streams_batch`
 
-Read the full state of up to 50 streams in a single call. Lets off-chain dashboards replace N `get_stream` calls with one.
+Read the full state of up to the configured maximum batch size (default 50) streams in a single call. Lets off-chain dashboards replace N `get_stream` calls with one.
 
 **Caller:** Anyone
 
 | Parameter | Type | Description |
 |---|---|---|
-| `stream_ids` | `Vec<u64>` | IDs of the streams to read (max 50) |
+| `stream_ids` | `Vec<u64>` | IDs of the streams to read (max = configured maximum batch size, default 50) |
 
 **Returns:** `Vec<Stream>` — streams in the same order as `stream_ids`
 
 **Errors:**
-- Panics if `stream_ids` has more than 50 entries
+- Panics if `stream_ids` has more entries than the configured maximum batch size
 - Panics if any stream ID is not found (consistent with `get_stream`)
 
 **Example:**
@@ -1075,18 +1199,18 @@ status == Exhausted  → claimable = 0
 
 ### `claimable_batch`
 
-Query claimable amounts for up to 50 streams in one contract call. Missing stream IDs return 0; all other results use the same calculation as `claimable` and preserve input order.
+Query claimable amounts for up to the configured maximum batch size (default 50) streams in one contract call. Missing stream IDs return 0; all other results use the same calculation as `claimable` and preserve input order.
 
 **Caller:** Anyone
 
 | Parameter | Type | Description |
 |---|---|---|
-| `stream_ids` | `Vec<u64>` | Stream IDs to query (maximum 50) |
+| `stream_ids` | `Vec<u64>` | Stream IDs to query (maximum = configured maximum batch size, default 50) |
 
 **Returns:** `Vec<i128>` — claimable amounts in the same order as `stream_ids`
 
 **Errors:**
-- Panics if `stream_ids` has more than 50 entries
+- Panics if `stream_ids` has more entries than the configured maximum batch size
 - E004 if claimable amount arithmetic overflows
 
 **Example:**
@@ -1962,7 +2086,7 @@ Keep this table in sync with that file (see [CONTRIBUTING.md](../CONTRIBUTING.md
 | E008 | `ERR_INVALID_RATE` | `rate_per_second` exceeds maximum (1,000,000,000) | `create_stream`, `create_streams_batch`, `update_rate` | Pass a rate ≤ 1,000,000,000 |
 | E009 | `ERR_BAD_NONCE` | Invalid admin nonce | `propose_admin`, `pause_contract`, `unpause_contract`, `set_min_deposit`, `expire_streams`, `upgrade`, `propose_upgrade`, `execute_upgrade`, `cancel_upgrade` | Read the current value with `admin_nonce` and pass it as `nonce` |
 | E009 | `ERR_BAD_NONCE` | Invalid admin nonce | `propose_admin`, `pause_contract`, `unpause_contract`, `set_min_deposit`, `set_protocol_fee`, `upgrade`, `propose_upgrade`, `execute_upgrade`, `cancel_upgrade` | Read the current value with `admin_nonce` and pass it as `nonce` |
-| E029 | `ERR_BATCH_TOO_LARGE` | Batch contains more than 50 streams | `create_streams_batch`, `cancel_streams_batch` | Split the operation into batches of at most 50 streams |
+| E029 | `ERR_BATCH_TOO_LARGE` | Batch contains more entries than the configured maximum batch size (default 50) | `create_streams_batch`, `cancel_streams_batch`, `pause_stream_batch`, `resume_stream_batch`, `get_streams_batch`, `claimable_batch` | Split the operation into batches no larger than the configured maximum (see `set_max_batch_size`) |
 | E030 | `ERR_INVALID_STOP_TIME` | Nonzero stop time precedes last withdrawal | `update_stop_time` | Use 0 or a timestamp at/after `last_withdraw_time` |
 | T001 | `ERR_OVERFLOW` (token) | Token arithmetic overflow | Token `mint`, `mint_to_batch`, `transfer`, `transfer_from` | Use smaller amounts |
 | T002 | `ERR_PAUSED` (token) | Token is paused | Token `transfer`, `transfer_from`, `burn`, `burn_from` | Wait for the admin to call `unpause_token` |

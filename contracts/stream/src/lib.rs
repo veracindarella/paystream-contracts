@@ -34,14 +34,14 @@ use storage::{
     ARCHIVE_WAIT_PERIOD, GRACE_PERIOD, SECONDS_PER_DAY, get_linear_vest_schedule, get_protocol_fee, get_stream_type, linear_vest_claimable_amount, set_linear_vest_schedule, set_stream_ended_at, set_max_creates_per_ledger as store_max_creates,
     accrual_start, claimable_amount, clear_pending_admin, clear_pending_upgrade,
     consume_admin_nonce, delete_template, get_admin, get_admin_nonce, get_auto_topup,
-    get_employee_streams, get_employer_streams, get_min_deposit, get_pending_admin,
-    get_pending_admin_nonce, get_pending_upgrade, get_stream_cliff, get_streams_in_range,
+    get_employee_streams, get_employer_streams, get_max_batch_size, get_min_deposit, get_pending_admin,
+    get_pending_admin_nonce, get_pending_upgrade, get_split_beneficiaries, get_stream_cliff, get_stream_metadata, get_streams_in_range,
     get_streams_in_time_range, get_template_ids, get_token_streams, index_employee_stream,
     index_employer_stream, index_stream_by_timestamp, index_token_stream, load_stream,
     load_template, mark_cliff_reached, next_id, receipt_owner, remove_auto_topup,
-    remove_employer_stream, save_stream, save_template, set_admin, set_auto_topup, set_min_deposit,
+    remove_employer_stream, save_stream, save_template, set_admin, set_auto_topup, set_max_batch_size, set_min_deposit,
     set_pending_admin, set_pending_admin_nonce, set_pending_upgrade, set_receipt_owner,
-    set_stream_cliff, stream_ids_by_employee, stream_ids_by_employer, TIMELOCK_DELAY,
+    set_stream_cliff, set_stream_metadata, stream_ids_by_employee, stream_ids_by_employer, TIMELOCK_DELAY,
 };
 use types::{
     AutoTopupConfig, PendingUpgrade, SplitBeneficiary,
@@ -54,11 +54,10 @@ use types::{
     ERR_REENTRANT, ERR_STREAM_ALREADY_ENDED, ERR_STREAM_CANCELLED, ERR_STREAM_EXHAUSTED,
     ERR_STREAM_NOT_ACTIVE, ERR_STREAM_NOT_FOUND, ERR_STREAM_NOT_PAUSED, ERR_ZERO_DEPOSIT,
     ERR_NOT_RECEIPT_OWNER, ERR_TEMPLATE_NOT_FOUND,
-    MAX_BATCH_SIZE,
 };
 use validate::{
-    validate_cliff, validate_create_stream, validate_rate, validate_split_beneficiaries,
-    validate_top_up,
+    validate_cliff, validate_create_stream, validate_metadata, validate_rate,
+    validate_split_beneficiaries, validate_top_up,
 };
 
 fn get_paused(env: &Env) -> bool {
@@ -90,6 +89,44 @@ fn assert_payroll_stream(env: &Env, stream_id: u64) {
         StreamType::Payroll,
         "operation not supported for linear vest streams"
     );
+}
+
+/// Returns the split beneficiaries for a stream, if it is a split stream.
+fn split_beneficiaries(env: &Env, stream_id: u64) -> Option<Vec<SplitBeneficiary>> {
+    get_split_beneficiaries(env, stream_id)
+}
+
+/// Pays `amount` to the stream's recipients, honouring split beneficiaries
+/// when configured. Returns the nominal recipient used for event emission.
+fn pay_recipients(env: &Env, stream: &Stream, amount: i128) -> Address {
+    let this = env.current_contract_address();
+    let token_client = token::Client::new(env, &stream.token);
+    let owner = receipt_owner(env, stream);
+    match split_beneficiaries(env, stream.id) {
+        Some(beneficiaries) => {
+            let mut distributed: i128 = 0;
+            let count = beneficiaries.len();
+            let mut index: u32 = 0;
+            for benef in beneficiaries.iter() {
+                index += 1;
+                let share = if index == count {
+                    // Last beneficiary absorbs rounding dust.
+                    amount - distributed
+                } else {
+                    amount * benef.basis_points as i128 / 10_000
+                };
+                if share > 0 {
+                    token_client.transfer(&this, &benef.address, &share);
+                    distributed += share;
+                }
+            }
+            owner
+        }
+        None => {
+            token_client.transfer(&this, &owner, &amount);
+            owner
+        }
+    }
 }
 
 /// Applies a pre-authorized auto top-up after a withdraw when the stream's
@@ -292,6 +329,30 @@ impl StreamContract {
         events::max_creates_per_ledger_updated(&env, max);
     }
 
+    /// Set the maximum number of entries allowed in a single batch entrypoint.
+    ///
+    /// The default is 50. The value is bounded to `1..=200` so a misconfigured
+    /// admin cannot make batch calls exceed the network's resource limits.
+    ///
+    /// # Parameters
+    /// - `admin` — must match the stored admin (requires auth)
+    /// - `nonce` — current admin nonce (replay protection)
+    /// - `max` — new batch size limit (1 through 200)
+    ///
+    /// # Errors
+    /// - Panics if `admin` auth fails or does not match stored admin
+    /// - E009 if `nonce` is wrong
+    /// - Panics if `max` is 0 or greater than 200
+    pub fn set_max_batch_size(env: Env, admin: Address, nonce: u64, max: u32) {
+        admin.require_auth();
+        let stored_admin = get_admin(&env);
+        assert_eq!(admin, stored_admin, "{}", ERR_NOT_ADMIN);
+        consume_admin_nonce(&env, nonce);
+        assert!(max >= 1 && max <= 200, "max batch size must be within 1..=200");
+        set_max_batch_size(&env, max);
+        events::max_batch_size_updated(&env, max);
+    }
+
     /// Set the protocol creation fee and its treasury destination.
     ///
     /// The fee is deducted from gross stream deposits. A value of 0 disables
@@ -357,9 +418,11 @@ impl StreamContract {
         stop_time: u64,
         low_balance_threshold: Option<i128>,
         cliff_time: Option<u64>,
+        metadata: Option<Map<Symbol, Symbol>>,
     ) -> u64 {
         employer.require_auth();
         assert!(!get_paused(&env), "{}", ERR_CONTRACT_PAUSED);
+        validate_metadata(&metadata);
 
         // SEC-24: enforce per-employer, per-ledger stream creation rate limit.
         check_and_increment_create_rate(&env, &employer, 1);
@@ -418,6 +481,9 @@ impl StreamContract {
         if let Some(c) = cliff {
             set_stream_cliff(&env, id, c);
         }
+        if let Some(m) = metadata {
+            set_stream_metadata(&env, id, &m);
+        }
         index_employer_stream(&env, &employer, id);
         index_employee_stream(&env, &employee, id);
         index_token_stream(&env, &stream.token, id);
@@ -438,6 +504,67 @@ impl StreamContract {
         total_grant: i128,
         vest_period: u64,
         cliff: Option<u64>,
+    ) -> u64 {
+        Self::create_linear_vest_inner(
+            env,
+            employer,
+            employee,
+            token_address,
+            total_grant,
+            vest_period,
+            cliff,
+            None,
+        )
+    }
+
+    /// Employer creates a linear vest grant split across multiple beneficiaries.
+    ///
+    /// Equivalent to [`create_linear_vest`], but claimable vesting is distributed
+    /// among `beneficiaries` according to their basis-point allocation. The first
+    /// beneficiary is used as the nominal employee for indexing and events.
+    ///
+    /// # Errors
+    /// - Same validations as [`create_linear_vest`]
+    /// - E031 if fewer than 2 beneficiaries
+    /// - E032 if more than 20 beneficiaries
+    /// - E030 if basis points do not sum to exactly 10000
+    pub fn create_split_vest(
+        env: Env,
+        employer: Address,
+        token: Address,
+        total_grant: i128,
+        vest_period: u64,
+        cliff: Option<u64>,
+        beneficiaries: Vec<SplitBeneficiary>,
+    ) -> u64 {
+        validate_split_beneficiaries(&beneficiaries);
+        let first = beneficiaries.get(0).expect("beneficiary missing");
+        let id = Self::create_linear_vest_inner(
+            env.clone(),
+            employer,
+            first.address.clone(),
+            token,
+            total_grant,
+            vest_period,
+            cliff,
+            Some(beneficiaries.clone()),
+        );
+        for benef in beneficiaries.iter() {
+            index_employee_stream(&env, &benef.address, id);
+        }
+        events::split_stream_created(&env, id, &employer, 0);
+        id
+    }
+
+    fn create_linear_vest_inner(
+        env: Env,
+        employer: Address,
+        employee: Address,
+        token_address: Address,
+        total_grant: i128,
+        vest_period: u64,
+        cliff: Option<u64>,
+        beneficiaries: Option<Vec<SplitBeneficiary>>,
     ) -> u64 {
         employer.require_auth();
         assert!(!get_paused(&env), "{}", ERR_CONTRACT_PAUSED);
@@ -499,6 +626,9 @@ impl StreamContract {
                 cliff,
             },
         );
+        if let Some(b) = beneficiaries {
+            set_split_beneficiaries(&env, id, &b);
+        }
         index_employer_stream(&env, &employer, id);
         index_employee_stream(&env, &employee, id);
         index_token_stream(&env, &token_address, id);
@@ -536,7 +666,11 @@ impl StreamContract {
         employer.require_auth();
         assert!(!get_paused(&env), "{}", ERR_CONTRACT_PAUSED);
         assert!(!params.is_empty(), "{}", ERR_EMPTY_PARAMS);
-        assert!(params.len() <= MAX_BATCH_SIZE, "{}", ERR_BATCH_TOO_LARGE);
+        assert!(
+            params.len() <= get_max_batch_size(&env),
+            "{}",
+            ERR_BATCH_TOO_LARGE
+        );
 
         // SEC-24: count the entire batch against the per-ledger rate limit so a
         // single batch call cannot bypass the cap.
@@ -583,6 +717,7 @@ impl StreamContract {
                 );
             }
             validate_cliff(p.cliff_time, p.stop_time);
+            validate_metadata(&p.metadata);
             assert!(
                 employer != p.employee,
                 "stream[{}]: employer and employee must differ",
@@ -642,6 +777,9 @@ impl StreamContract {
             save_stream(&env, &stream);
             if let Some(c) = p.cliff_time.filter(|c| *c > now) {
                 set_stream_cliff(&env, id, c);
+            }
+            if let Some(m) = p.metadata.clone() {
+                set_stream_metadata(&env, id, &m);
             }
             index_employer_stream(&env, &employer, id);
             index_employee_stream(&env, &p.employee, id);
@@ -830,8 +968,7 @@ impl StreamContract {
             stream.status = StreamStatus::Exhausted;
         }
 
-        let token_client = token::Client::new(&env, &stream.token);
-        token_client.transfer(&env.current_contract_address(), &employee, &amount);
+        pay_recipients(&env, &stream, amount);
         maybe_auto_topup(&env, &mut stream, now);
 
         stream.locked = false;
@@ -928,8 +1065,7 @@ impl StreamContract {
                 stream.status = StreamStatus::Exhausted;
             }
 
-            let token_client = token::Client::new(&env, &stream.token);
-            token_client.transfer(&env.current_contract_address(), &employee, &amount);
+            pay_recipients(&env, &stream, amount);
             maybe_auto_topup(&env, &mut stream, now);
 
             stream.locked = false;
@@ -1190,7 +1326,7 @@ impl StreamContract {
         employer.require_auth();
         assert!(!stream_ids.is_empty(), "stream_ids must not be empty");
         assert!(
-            stream_ids.len() <= MAX_BATCH_SIZE,
+            stream_ids.len() <= get_max_batch_size(&env),
             "{}",
             ERR_BATCH_TOO_LARGE
         );
@@ -1274,7 +1410,7 @@ impl StreamContract {
         employer.require_auth();
         assert!(!stream_ids.is_empty(), "stream_ids must not be empty");
         assert!(
-            stream_ids.len() <= MAX_BATCH_SIZE,
+            stream_ids.len() <= get_max_batch_size(&env),
             "{}",
             ERR_BATCH_TOO_LARGE
         );
@@ -1474,7 +1610,7 @@ impl StreamContract {
         employer.require_auth();
         assert!(!stream_ids.is_empty(), "stream_ids must not be empty");
         assert!(
-            stream_ids.len() <= MAX_BATCH_SIZE,
+            stream_ids.len() <= get_max_batch_size(&env),
             "{}",
             ERR_BATCH_TOO_LARGE
         );
@@ -1770,7 +1906,11 @@ impl StreamContract {
     /// - Panics if `stream_ids` has more than 50 entries
     /// - Panics if any stream is not found
     pub fn get_streams_batch(env: Env, stream_ids: Vec<u64>) -> Vec<Stream> {
-        assert!(stream_ids.len() <= 50, "stream_ids length exceeds 50");
+        assert!(
+            stream_ids.len() <= get_max_batch_size(&env),
+            "{}",
+            ERR_BATCH_TOO_LARGE
+        );
         let mut streams: Vec<Stream> = Vec::new(&env);
         for stream_id in stream_ids.iter() {
             streams.push_back(load_stream(&env, stream_id).expect(ERR_STREAM_NOT_FOUND));
@@ -1803,6 +1943,46 @@ impl StreamContract {
     pub fn get_stream_type(env: Env, stream_id: u64) -> StreamType {
         load_stream(&env, stream_id).expect(ERR_STREAM_NOT_FOUND);
         get_stream_type(&env, stream_id)
+    }
+
+    /// Return the structured metadata map attached to a stream, if any (#467).
+    ///
+    /// Metadata is a small bounded map (e.g. department, cost center) used for
+    /// payroll categorization. Returns `None` when no metadata was set.
+    ///
+    /// # Errors
+    /// - E015 if the stream does not exist
+    pub fn get_stream_metadata(env: Env, stream_id: u64) -> Option<Map<Symbol, Symbol>> {
+        load_stream(&env, stream_id).expect(ERR_STREAM_NOT_FOUND);
+        get_stream_metadata(&env, stream_id)
+    }
+
+    /// Replace the structured metadata map of a stream (#467).
+    ///
+    /// Only the stream's employer may update metadata. The map is bounded in
+    /// size and key/value length; see [`validate_metadata`].
+    ///
+    /// # Parameters
+    /// - `employer` — must match the stream's employer (requires auth)
+    /// - `stream_id` — ID of the stream to update
+    /// - `metadata` — new metadata map (may be empty to clear)
+    ///
+    /// # Errors
+    /// - E015 if the stream does not exist
+    /// - E018 if the caller is not the stream's employer
+    /// - Panics if the metadata map exceeds the size cap
+    pub fn update_stream_metadata(
+        env: Env,
+        employer: Address,
+        stream_id: u64,
+        metadata: Map<Symbol, Symbol>,
+    ) {
+        employer.require_auth();
+        let stream = load_stream(&env, stream_id).expect(ERR_STREAM_NOT_FOUND);
+        assert_eq!(stream.employer, employer, "{}", ERR_NOT_EMPLOYER);
+        validate_metadata(&Some(metadata.clone()));
+        set_stream_metadata(&env, stream_id, &metadata);
+        events::stream_metadata_updated(&env, stream_id, metadata.len());
     }
 
     /// Return linear vest terms, or `None` for a payroll stream.
@@ -1874,7 +2054,11 @@ impl StreamContract {
     /// - Panics if `stream_ids` has more than 50 entries
     /// - E004 if claimable amount arithmetic overflows
     pub fn claimable_batch(env: Env, stream_ids: Vec<u64>) -> Vec<i128> {
-        assert!(stream_ids.len() <= 50, "stream_ids length exceeds 50");
+        assert!(
+            stream_ids.len() <= get_max_batch_size(&env),
+            "{}",
+            ERR_BATCH_TOO_LARGE
+        );
         let now = env.ledger().timestamp();
         let mut amounts: Vec<i128> = Vec::new(&env);
         for stream_id in stream_ids.iter() {
@@ -2054,6 +2238,7 @@ impl StreamContract {
             t.stop_time,
             None,
             t.cliff_time,
+            t.metadata,
         )
     }
 
@@ -2345,7 +2530,7 @@ impl StreamContract {
             return page;
         }
 
-        let end = offset.saturating_add(limit.min(50));
+        let end = offset.saturating_add(limit.min(get_max_batch_size(&env)));
         let mut position = 0u32;
         for stream_id in stream_ids.iter() {
             if position >= end {
@@ -2495,7 +2680,7 @@ impl StreamContract {
             return page;
         }
 
-        let end = offset.saturating_add(limit.min(50));
+        let end = offset.saturating_add(limit.min(get_max_batch_size(&env) as u64));
         let mut position = 0u64;
         for stream_id in stream_ids.iter() {
             if position >= end {

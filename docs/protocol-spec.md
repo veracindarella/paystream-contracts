@@ -37,6 +37,17 @@ Stream record `S`:
 | `last` | Time accrual was last settled |
 | `banked` | Accrual banked at an earlier rate (B) |
 | `status` ∈ {Active, Paused, Cancelled, Exhausted} | Lifecycle state |
+| `metadata : key → value` | Optional bounded map of short string pairs (e.g. `department`, `cost_center`) for off-chain categorisation |
+| `splits` | Optional list of `(beneficiary, bps)` pairs; empty for non-split streams |
+
+### 2.1 Metadata
+
+`metadata` is a small map of short string keys to short string values, attached at create time and replaceable on update. It is purely descriptive: it never affects accrual, claimable amounts or payouts, and it is readable via a query. The map is bounded: at most `MAX_METADATA_ENTRIES` entries, each key and value at most `MAX_METADATA_LEN` bytes. An operation that would exceed either cap is rejected (`⊥`). Storing metadata must not change any other field of `S`.
+
+### 2.2 Split beneficiaries
+
+A stream may carry `splits`, a list of `(beneficiary, bps)` pairs where each `bps` is in basis points (1 bps = 0.01%). Splits are allowed on payroll streams and on linear vest streams. The list is valid when it is non-empty, every `bps > 0`, every beneficiary is distinct, and `Σ bps ≤ 10000`. The remainder `10000 − Σ bps` (if any) accrues to `S.employee`. When `splits` is empty, the whole claimable amount goes to `S.employee`.
+=======
 
 ## 3. Accrual formula
 
@@ -50,23 +61,37 @@ claimable(S, t) = 0                                             if status ∈ {C
 
 Arithmetic overflow rejects the operation (`⊥`). It never wraps.
 
+For a split stream, the claimable amount is divided among the beneficiaries. For each `(b, bps)` in `S.splits`:
+
+```
+share(b, S, t) = floor(claimable(S, t) · bps / 10000)
+```
+
+and the employee receives `claimable(S, t) − Σ share(b, S, t)`. Rounding dust therefore always stays with the employee, so the shares plus the employee's portion sum exactly to `claimable(S, t)`.
+
 ## 4. Operations
 
 ### 4.1 Create
 
 `create(employer, employee, token, D, r, stop)` requires `auth(employer)`, `¬paused`, `D ≥ minDeposit`, `D > 0`, `r > 0`, and `stop = 0 ∨ stop > t`.
 
-Effect: `D` tokens move from employer to the protocol. A new `S` is stored with `W = 0`, `B = 0`, `start = last = t`, `status = Active`.
+Effect: `D` tokens move from employer to the protocol. A new `S` is stored with `W = 0`, `B = 0`, `start = last = t`, `status = Active`, empty `splits`, and the supplied `metadata` (default empty).
+
+`createSplit(employer, employee, token, D, r, stop, splits, metadata)` is the same operation with the additional requirements that `splits` is valid per §2.2 and `metadata` satisfies the caps in §2.1. It is available for payroll streams and for linear vest streams; the vest variant (`createSplitVest`) additionally requires `stop > t` and applies the same split rules to vesting claimable amounts.
 
 ### 4.2 Withdraw
 
 `withdraw(S)` requires `auth(S.employee)`, `¬paused`, and `S.status ∈ {Active, Exhausted}`.
 
-Effect: let `c = claimable(S, t)`. Then `c` tokens go to the employee, `W ← W + c`, `last ← end(t)`, `B ← 0`. If `W = D`, then `status ← Exhausted`.
+Effect: let `c = claimable(S, t)`. Then `c` tokens are distributed: each split beneficiary `b` receives `share(b, S, t)` and the employee receives the remainder. `W ← W + c`, `last ← end(t)`, `B ← 0`. If `W = D`, then `status ← Exhausted`.
 
 ### 4.3 Top up
 
 `topUp(S, a)` requires `auth(S.employer)`, `a > 0`, and `S.status ∈ {Active, Paused}`. Effect: `D ← D + a`.
+
+### 4.3.1 Metadata update
+
+`updateMetadata(S, metadata)` requires `auth(S.employer)` and `S.status ∈ {Active, Paused}`. The new map must satisfy the caps in §2.1. Effect: `S.metadata ← metadata`. No other field changes and no tokens move.
 
 ### 4.4 Rate update
 
@@ -113,6 +138,8 @@ For every stream `S` and every reachable state:
 5. **Monotonic accrual:** for `t₁ ≤ t₂` with no operations in between, `earned(S, t₁) ≤ earned(S, t₂)`.
 6. **Terminal states:** `Cancelled` and `Exhausted` have `claimable = 0` and accept no further accrual.
 7. **Conservation:** the protocol's token balance is at least `Σ (D − W)` over all non-terminal streams.
+8. **Split conservation:** for a split stream, the sum of all beneficiary shares plus the employee's portion equals `claimable(S, t)` exactly; no share exceeds its basis-point fraction of `claimable(S, t)`.
+9. **Metadata isolation:** `metadata` never influences accrual, claimable amounts, splits or payouts, and satisfies the caps in §2.1 in every reachable state.
 
 ## 7. Sign-off
 

@@ -37,6 +37,7 @@ Features that make continuous payroll practical without manual intervention.
 
 - **Vesting** — cliff and linear vesting schedules on streams
 - **Auto top-up** — PROD-13 (#122): employer-authorized recurring top-ups
+- **Notional / compounding interest** — SC-98 (#466): researched and **out of scope for v0.3**; streams stay linear. Yield-bearing streams would require an external oracle/price feed, adding a trust and liveness dependency the contract does not otherwise have. Decision recorded in [ADR-005](adr/005-notional-interest.md); revisit for v1.0+ if a follow-up design issue is opened.
 - Improved query endpoints for indexers and dashboards
 
 ## v1.0 — Mainnet launch

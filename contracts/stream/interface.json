@@ -1,6 +1,66 @@
 {
   "_comment": "Baseline interface spec for the stream contract. Regenerate with scripts/check-interface.sh --update after intentional public interface changes.",
   "contract": "stream",
-  "functions": [],
-  "events": []
+  "functions": [
+    {
+      "name": "create_split_vest",
+      "description": "Create a linear vest stream whose claimable amount is split among multiple beneficiaries.",
+      "params": [
+        { "name": "sender", "type": "Address" },
+        { "name": "beneficiaries", "type": "Vec<SplitBeneficiary>" },
+        { "name": "token", "type": "Address" },
+        { "name": "total_amount", "type": "i128" },
+        { "name": "start_time", "type": "u64" },
+        { "name": "cliff_time", "type": "u64" },
+        { "name": "end_time", "type": "u64" },
+        { "name": "metadata", "type": "Map<Symbol, String>" }
+      ],
+      "returns": "u64"
+    },
+    {
+      "name": "update_stream_metadata",
+      "description": "Update the bounded structured metadata map for a stream.",
+      "params": [
+        { "name": "caller", "type": "Address" },
+        { "name": "stream_id", "type": "u64" },
+        { "name": "metadata", "type": "Map<Symbol, String>" }
+      ],
+      "returns": "()"
+    },
+    {
+      "name": "get_stream_metadata",
+      "description": "Query the structured metadata map for a stream.",
+      "params": [
+        { "name": "stream_id", "type": "u64" }
+      ],
+      "returns": "Map<Symbol, String>"
+    },
+    {
+      "name": "set_max_batch_size",
+      "description": "Admin-configurable maximum batch size, bounded to 1..=200. Default is 50.",
+      "params": [
+        { "name": "admin", "type": "Address" },
+        { "name": "nonce", "type": "u64" },
+        { "name": "max", "type": "u32" }
+      ],
+      "returns": "()"
+    }
+  ],
+  "events": [
+    {
+      "name": "stream_metadata_updated",
+      "description": "Emitted when a stream's structured metadata map is updated.",
+      "fields": [
+        { "name": "stream_id", "type": "u64" },
+        { "name": "metadata", "type": "Map<Symbol, String>" }
+      ]
+    },
+    {
+      "name": "max_batch_size_updated",
+      "description": "Emitted when the admin-configurable max batch size is changed.",
+      "fields": [
+        { "name": "max", "type": "u32" }
+      ]
+    }
+  ]
 }

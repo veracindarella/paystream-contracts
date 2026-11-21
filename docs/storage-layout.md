@@ -54,6 +54,8 @@ Every `DataKey` variant in `contracts/stream/src/types.rs`, in declaration order
 | `CreateCountThisLedger(Address)` | `u32` | Temporary | 2 ledgers | `check_and_increment_create_rate` | Rate limiter |
 | `LastCreateLedger(Address)` | `u32` | Temporary | 2 ledgers | `check_and_increment_create_rate` | Rate limiter |
 | `SplitBeneficiaries(u64)` | `Vec<SplitBeneficiary>` | Persistent | Extended on read/write (1y → 2y) | Split stream creation (PROD-22) | Split withdrawals |
+| `StreamMetadata(u64)` | `Map<Symbol, String>` | Persistent | Extended on read/write (1y → 2y) | `create_stream` / `update_stream_metadata` (bounded, cap enforced) | `get_stream_metadata` |
+| `MaxBatchSize` | `u32` | Instance | Instance | `set_max_batch_size` (bounds `1..=200`) | All batch entry points (absent = 50) |
 
 > **Keep this table current.** Any PR that adds, removes, or changes a `DataKey` variant must update this table in the same PR (reviewers: check this).
 
@@ -70,6 +72,7 @@ Every `DataKey` variant in `contracts/stream/src/types.rs`, in declaration order
 | `id` | `u64` | Stream ID |
 | `last_withdraw_time` | `u64` | Ledger timestamp of the last withdrawal |
 | `locked` | `bool` | Reentrancy guard (normally `false` between transactions) |
+| `metadata` | `Map<Symbol, String>` | Optional bounded metadata map (e.g. department, cost center); empty when unset |
 | `rate_per_second` | `i128` | Tokens streamed per second |
 | `start_time` | `u64` | Ledger timestamp the stream started |
 | `status` | `StreamStatus` | `Vec[Symbol("Active" \| "Paused" \| "Cancelled" \| "Exhausted")]` |

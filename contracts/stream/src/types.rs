@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 
-use soroban_sdk::{contracttype, Address};
+use soroban_sdk::{contracttype, Address, Map, Symbol};
 
 /// Status of a salary stream.
 #[contracttype]
@@ -208,6 +208,13 @@ pub enum DataKey {
     LastCreateLedger(Address),
     /// Split stream beneficiaries: stream ID → Vec<SplitBeneficiary> for multi-recipient streams (PROD-22).
     SplitBeneficiaries(u64),
+    /// Structured stream metadata (e.g. department, cost center) for payroll
+    /// categorization: stream ID → Map<Symbol, Symbol>. Stored apart from
+    /// `Stream` so existing persisted streams stay decodable. See #467.
+    StreamMetadata(u64),
+    /// Admin-configurable maximum batch size for batch entrypoints.
+    /// Default: `MAX_BATCH_SIZE` (50). Bounded to 1..=200. See #483.
+    MaxBatchSize,
 }
 
 /// Contract error codes – panic messages reference these names so callers can
@@ -309,6 +316,30 @@ pub const ERR_CLIFF_AFTER_STOP: &str = "E035: cliff_time must be <= stop_time";
 /// Maximum number of streams in one batch call (create/cancel/pause/resume).
 pub const MAX_BATCH_SIZE: u32 = 50;
 
+/// Lower bound for the admin-configurable maximum batch size (#483).
+pub const MIN_MAX_BATCH_SIZE: u32 = 1;
+
+/// Upper bound for the admin-configurable maximum batch size (#483).
+pub const MAX_MAX_BATCH_SIZE: u32 = 200;
+
+/// Maximum number of entries allowed in a stream's metadata map (#467).
+pub const MAX_METADATA_ENTRIES: u32 = 8;
+
+/// Maximum length in bytes of a metadata key symbol (#467).
+pub const MAX_METADATA_KEY_LEN: u32 = 32;
+
+/// Maximum length in bytes of a metadata value symbol (#467).
+pub const MAX_METADATA_VALUE_LEN: u32 = 32;
+
+/// E036: stream metadata map exceeds `MAX_METADATA_ENTRIES` (#467).
+pub const ERR_METADATA_TOO_LARGE: &str = "E036: metadata exceeds the maximum number of entries";
+
+/// E037: a metadata key or value exceeds its maximum length (#467).
+pub const ERR_METADATA_ENTRY_TOO_LONG: &str = "E037: metadata key or value exceeds maximum length";
+
+/// E038: configured max batch size is outside the allowed bounds (#483).
+pub const ERR_INVALID_MAX_BATCH_SIZE: &str = "E038: max batch size out of bounds";
+
 /// E030: stop_time extends beyond 10-year limit from now
 pub const ERR_STOP_TIME_TOO_FAR: &str = "E030: stop_time must not exceed 10 years from now";
 
@@ -373,3 +404,9 @@ pub struct ProtocolFeeConfig {
     /// Address that receives protocol fees.
     pub treasury: Address,
 }
+
+/// Structured, bounded metadata attached to a stream for payroll categorization
+/// (e.g. department, cost center). Keys and values are short symbols; the map
+/// is capped at `MAX_METADATA_ENTRIES` entries with each key/value limited to
+/// `MAX_METADATA_KEY_LEN` / `MAX_METADATA_VALUE_LEN` bytes. See #467.
+pub type StreamMetadata = Map<Symbol, Symbol>;

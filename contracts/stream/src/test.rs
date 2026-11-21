@@ -5212,3 +5212,422 @@ fn test_template_save_requires_employer_auth() {
     let res = client.try_save_template(&employer, &1, &template_params(&env, &token, None));
     assert!(res.is_err(), "save_template must require the employer's auth");
 }
+
+// ---------------------------------------------------------------------------
+// SC-99 (#467): bounded stream metadata map
+// ---------------------------------------------------------------------------
+
+fn metadata_entry(
+    env: &Env,
+    key: &str,
+    value: &str,
+) -> (soroban_sdk::String, soroban_sdk::String) {
+    (
+        soroban_sdk::String::from_slice(env, key),
+        soroban_sdk::String::from_slice(env, value),
+    )
+}
+
+fn metadata_map(
+    env: &Env,
+    entries: &[(&str, &str)],
+) -> soroban_sdk::Map<soroban_sdk::String, soroban_sdk::String> {
+    let mut map = soroban_sdk::Map::new(env);
+    for (k, v) in entries.iter() {
+        let (key, value) = metadata_entry(env, k, v);
+        map.set(key, value);
+    }
+    map
+}
+
+/// Metadata supplied at creation is stored and queryable afterwards.
+#[test]
+fn test_metadata_round_trip_on_create() {
+    let (env, client) = setup();
+    let admin = Address::generate(&env);
+    let employer = Address::generate(&env);
+    let employee = Address::generate(&env);
+    let token_id = setup_token(&env, &employer);
+
+    client.initialize(&admin);
+    let meta = metadata_map(&env, &[("department", "engineering"), ("cost_center", "cc-42")]);
+    let id = client.create_stream_with_metadata(
+        &employer,
+        &employee,
+        &token_id,
+        &10_000,
+        &10,
+        &0,
+        &None,
+        &None,
+        &meta,
+    );
+
+    let stored = client.get_stream_metadata(&id);
+    assert_eq!(stored.len(), 2);
+    let (dept_key, _) = metadata_entry(&env, "department", "");
+    assert_eq!(
+        stored.get(dept_key).unwrap(),
+        soroban_sdk::String::from_slice(&env, "engineering")
+    );
+    let (cc_key, _) = metadata_entry(&env, "cost_center", "");
+    assert_eq!(
+        stored.get(cc_key).unwrap(),
+        soroban_sdk::String::from_slice(&env, "cc-42")
+    );
+}
+
+/// Metadata can be replaced through the update entrypoint.
+#[test]
+fn test_metadata_update_replaces_map() {
+    let (env, client) = setup();
+    let admin = Address::generate(&env);
+    let employer = Address::generate(&env);
+    let employee = Address::generate(&env);
+    let token_id = setup_token(&env, &employer);
+
+    client.initialize(&admin);
+    let id = client.create_stream_with_metadata(
+        &employer,
+        &employee,
+        &token_id,
+        &10_000,
+        &10,
+        &0,
+        &None,
+        &None,
+        &metadata_map(&env, &[("department", "engineering")]),
+    );
+
+    let updated = metadata_map(&env, &[("department", "finance"), ("cost_center", "cc-7")]);
+    client.update_stream_metadata(&employer, &id, &updated);
+
+    let stored = client.get_stream_metadata(&id);
+    assert_eq!(stored.len(), 2);
+    let (dept_key, _) = metadata_entry(&env, "department", "");
+    assert_eq!(
+        stored.get(dept_key).unwrap(),
+        soroban_sdk::String::from_slice(&env, "finance")
+    );
+}
+
+/// Exactly MAX_METADATA_ENTRIES entries are accepted.
+#[test]
+fn test_metadata_accepts_max_entries() {
+    let (env, client) = setup();
+    let admin = Address::generate(&env);
+    let employer = Address::generate(&env);
+    let employee = Address::generate(&env);
+    let token_id = setup_token(&env, &employer);
+
+    client.initialize(&admin);
+    let mut map = soroban_sdk::Map::new(&env);
+    for i in 0..crate::MAX_METADATA_ENTRIES {
+        let key = soroban_sdk::String::from_slice(&env, "k");
+        let mut buf = [0u8; 8];
+        let mut n = i;
+        let mut len = 0usize;
+        if n == 0 {
+            buf[0] = b'0';
+            len = 1;
+        }
+        while n > 0 {
+            buf[len] = b'0' + (n % 10) as u8;
+            n /= 10;
+            len += 1;
+        }
+        let mut key_bytes = [0u8; 9];
+        key_bytes[0] = b'k';
+        for j in 0..len {
+            key_bytes[j + 1] = buf[len - 1 - j];
+        }
+        let key = soroban_sdk::String::from_bytes(&env, &key_bytes[..len + 1]);
+        let value = soroban_sdk::String::from_slice(&env, "v");
+        map.set(key, value);
+    }
+    assert_eq!(map.len(), crate::MAX_METADATA_ENTRIES);
+
+    let id = client.create_stream_with_metadata(
+        &employer,
+        &employee,
+        &token_id,
+        &10_000,
+        &10,
+        &0,
+        &None,
+        &None,
+        &map,
+    );
+    assert_eq!(client.get_stream_metadata(&id).len(), crate::MAX_METADATA_ENTRIES);
+}
+
+/// MAX_METADATA_ENTRIES + 1 entries are rejected.
+#[test]
+#[should_panic(expected = "E040")]
+fn test_metadata_rejects_too_many_entries() {
+    let (env, client) = setup();
+    let admin = Address::generate(&env);
+    let employer = Address::generate(&env);
+    let employee = Address::generate(&env);
+    let token_id = setup_token(&env, &employer);
+
+    client.initialize(&admin);
+    let mut map = soroban_sdk::Map::new(&env);
+    for i in 0..=crate::MAX_METADATA_ENTRIES {
+        let mut key_bytes = [0u8; 9];
+        key_bytes[0] = b'k';
+        key_bytes[1] = b'0' + (i % 10) as u8;
+        let key = soroban_sdk::String::from_bytes(&env, &key_bytes[..2]);
+        let value = soroban_sdk::String::from_slice(&env, "v");
+        map.set(key, value);
+    }
+
+    client.create_stream_with_metadata(
+        &employer,
+        &employee,
+        &token_id,
+        &10_000,
+        &10,
+        &0,
+        &None,
+        &None,
+        &map,
+    );
+}
+
+/// A key longer than MAX_METADATA_KEY_LEN is rejected.
+#[test]
+#[should_panic(expected = "E041")]
+fn test_metadata_rejects_oversized_key() {
+    let (env, client) = setup();
+    let admin = Address::generate(&env);
+    let employer = Address::generate(&env);
+    let employee = Address::generate(&env);
+    let token_id = setup_token(&env, &employer);
+
+    client.initialize(&admin);
+    let mut key_bytes = [0u8; 64];
+    for b in key_bytes.iter_mut() {
+        *b = b'a';
+    }
+    let key = soroban_sdk::String::from_bytes(&env, &key_bytes[..(crate::MAX_METADATA_KEY_LEN + 1) as usize]);
+    let mut map = soroban_sdk::Map::new(&env);
+    map.set(key, soroban_sdk::String::from_slice(&env, "v"));
+
+    client.create_stream_with_metadata(
+        &employer,
+        &employee,
+        &token_id,
+        &10_000,
+        &10,
+        &0,
+        &None,
+        &None,
+        &map,
+    );
+}
+
+/// A value longer than MAX_METADATA_VALUE_LEN is rejected.
+#[test]
+#[should_panic(expected = "E042")]
+fn test_metadata_rejects_oversized_value() {
+    let (env, client) = setup();
+    let admin = Address::generate(&env);
+    let employer = Address::generate(&env);
+    let employee = Address::generate(&env);
+    let token_id = setup_token(&env, &employer);
+
+    client.initialize(&admin);
+    let mut value_bytes = [0u8; 128];
+    for b in value_bytes.iter_mut() {
+        *b = b'v';
+    }
+    let value =
+        soroban_sdk::String::from_bytes(&env, &value_bytes[..(crate::MAX_METADATA_VALUE_LEN + 1) as usize]);
+    let mut map = soroban_sdk::Map::new(&env);
+    map.set(soroban_sdk::String::from_slice(&env, "k"), value);
+
+    client.create_stream_with_metadata(
+        &employer,
+        &employee,
+        &token_id,
+        &10_000,
+        &10,
+        &0,
+        &None,
+        &None,
+        &map,
+    );
+}
+
+// ---------------------------------------------------------------------------
+// SC-115 (#483): configurable MAX_BATCH_SIZE
+// ---------------------------------------------------------------------------
+
+/// Default batch size limit is 50 before any admin configuration.
+#[test]
+fn test_max_batch_size_default_is_50() {
+    let (env, client) = setup();
+    let admin = Address::generate(&env);
+    client.initialize(&admin);
+    assert_eq!(client.max_batch_size(), 50);
+}
+
+/// Lower bound 1 is accepted.
+#[test]
+fn test_set_max_batch_size_accepts_lower_bound() {
+    let (env, client) = setup();
+    let admin = Address::generate(&env);
+    client.initialize(&admin);
+    client.set_max_batch_size(&admin, &0, &1);
+    assert_eq!(client.max_batch_size(), 1);
+}
+
+/// Upper bound 200 is accepted.
+#[test]
+fn test_set_max_batch_size_accepts_upper_bound() {
+    let (env, client) = setup();
+    let admin = Address::generate(&env);
+    client.initialize(&admin);
+    client.set_max_batch_size(&admin, &0, &200);
+    assert_eq!(client.max_batch_size(), 200);
+}
+
+/// 0 is rejected.
+#[test]
+#[should_panic(expected = "E043")]
+fn test_set_max_batch_size_rejects_zero() {
+    let (env, client) = setup();
+    let admin = Address::generate(&env);
+    client.initialize(&admin);
+    client.set_max_batch_size(&admin, &0, &0);
+}
+
+/// 201 is rejected.
+#[test]
+#[should_panic(expected = "E043")]
+fn test_set_max_batch_size_rejects_above_upper_bound() {
+    let (env, client) = setup();
+    let admin = Address::generate(&env);
+    client.initialize(&admin);
+    client.set_max_batch_size(&admin, &0, &201);
+}
+
+/// Batch entrypoints honour the configured limit.
+#[test]
+#[should_panic(expected = "E005")]
+fn test_batch_respects_configured_max_batch_size() {
+    let (env, client) = setup();
+    let admin = Address::generate(&env);
+    let employer = Address::generate(&env);
+    let token_id = setup_token(&env, &employer);
+
+    client.initialize(&admin);
+    client.set_min_deposit(&admin, &0, &100);
+    client.set_max_batch_size(&admin, &1, &2);
+
+    let params = make_stream_params(&env, &token_id, 3);
+    client.create_streams_batch(&employer, &params);
+}
+
+/// A batch exactly at the configured limit succeeds.
+#[test]
+fn test_batch_at_configured_max_batch_size_succeeds() {
+    let (env, client) = setup();
+    let admin = Address::generate(&env);
+    let employer = Address::generate(&env);
+    let token_id = setup_token(&env, &employer);
+
+    client.initialize(&admin);
+    client.set_min_deposit(&admin, &0, &100);
+    client.set_max_batch_size(&admin, &1, &2);
+
+    let params = make_stream_params(&env, &token_id, 2);
+    let ids = client.create_streams_batch(&employer, &params);
+    assert_eq!(ids.len(), 2);
+}
+
+// ---------------------------------------------------------------------------
+// SC-114 (#482): split vest streams
+// ---------------------------------------------------------------------------
+
+fn split_beneficiaries(
+    env: &Env,
+    a: &Address,
+    bps_a: u32,
+    b: &Address,
+    bps_b: u32,
+) -> soroban_sdk::Vec<crate::types::SplitBeneficiary> {
+    let mut v = soroban_sdk::Vec::new(env);
+    v.push_back(crate::types::SplitBeneficiary {
+        beneficiary: a.clone(),
+        basis_points: bps_a,
+    });
+    v.push_back(crate::types::SplitBeneficiary {
+        beneficiary: b.clone(),
+        basis_points: bps_b,
+    });
+    v
+}
+
+/// Split vest creation stores the split and reports the LinearVest type.
+#[test]
+fn test_create_split_vest_stores_split() {
+    let (env, client) = setup();
+    let admin = Address::generate(&env);
+    let employer = Address::generate(&env);
+    let a = Address::generate(&env);
+    let b = Address::generate(&env);
+    let token_id = setup_token(&env, &employer);
+
+    client.initialize(&admin);
+    let split = split_beneficiaries(&env, &a, 6_000, &b, 4_000);
+    let id = client.create_split_vest(&employer, &token_id, &100_000, &100, &None, &split);
+
+    assert_eq!(
+        client.get_stream_type(&id),
+        crate::types::StreamType::LinearVest
+    );
+    let stored = client.get_split_beneficiaries(&id);
+    assert_eq!(stored.len(), 2);
+}
+
+/// Split basis points must sum to 10_000.
+#[test]
+#[should_panic(expected = "E044")]
+fn test_create_split_vest_rejects_bad_basis_points() {
+    let (env, client) = setup();
+    let admin = Address::generate(&env);
+    let employer = Address::generate(&env);
+    let a = Address::generate(&env);
+    let b = Address::generate(&env);
+    let token_id = setup_token(&env, &employer);
+
+    client.initialize(&admin);
+    let split = split_beneficiaries(&env, &a, 6_000, &b, 3_000);
+    client.create_split_vest(&employer, &token_id, &100_000, &100, &None, &split);
+}
+
+/// Split vest withdraw distributes claimable per basis points.
+#[test]
+fn test_split_vest_withdraw_distributes_claimable() {
+    let (env, client) = setup();
+    let admin = Address::generate(&env);
+    let employer = Address::generate(&env);
+    let a = Address::generate(&env);
+    let b = Address::generate(&env);
+    let token_id = setup_token(&env, &employer);
+    let token = paystream_token::TokenContractClient::new(&env, &token_id);
+
+    client.initialize(&admin);
+    let split = split_beneficiaries(&env, &a, 6_000, &b, 4_000);
+    let id = client.create_split_vest(&employer, &token_id, &100_000, &100, &None, &split);
+
+    env.ledger().with_mut(|l| l.timestamp += 50);
+    assert_eq!(client.claimable(&id), 50_000);
+
+    client.withdraw_split(&a, &id);
+    assert_eq!(token.balance(&a), 30_000);
+    assert_eq!(token.balance(&b), 20_000);
+    assert_eq!(client.get_stream(&id).withdrawn, 50_000);
+}
