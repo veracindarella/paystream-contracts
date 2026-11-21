@@ -238,6 +238,51 @@ fn test_protocol_fee_defaults_to_zero() {
     assert_eq!(client.get_protocol_fee(), (0, None));
 }
 
+// ---------------------------------------------------------------------------
+// TEST-52 (#567) – protocol fee disabled (0 bps): full deposit locked,
+// nothing transferred to treasury, get_protocol_fee_config() returns None.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn test_protocol_fee_disabled_locks_full_deposit_and_transfers_nothing() {
+    let (env, client) = setup();
+    let admin = Address::generate(&env);
+    let employer = Address::generate(&env);
+    let employee = Address::generate(&env);
+    let treasury = Address::generate(&env);
+    let token_id = setup_token(&env, &employer);
+    let token = paystream_token::TokenContractClient::new(&env, &token_id);
+
+    client.initialize(&admin);
+
+    // Default config: fee disabled, no treasury configured.
+    assert!(client.get_protocol_fee_config().is_none());
+
+    let employer_before = token.balance(&employer);
+    let treasury_before = token.balance(&treasury);
+
+    let gross: i128 = 10_000;
+    let stream_id =
+        client.create_stream(&employer, &employee, &token_id, &gross, &10, &0, &None, &None);
+
+    // The full gross deposit is locked in the stream — no fee is skimmed.
+    let s = client.get_stream(&stream_id);
+    assert_eq!(s.deposit, gross, "full deposit must be locked when fee is 0 bps");
+    assert_eq!(s.withdrawn, 0);
+
+    // Employer paid exactly the gross amount; treasury received nothing.
+    assert_eq!(token.balance(&employer), employer_before - gross);
+    assert_eq!(
+        token.balance(&treasury),
+        treasury_before,
+        "no treasury transfer may happen when the fee is disabled"
+    );
+    assert_eq!(token.balance(&client.address), gross);
+
+    // The public fee-config query reports the fee as disabled.
+    assert!(client.get_protocol_fee_config().is_none());
+}
+
 #[test]
 #[should_panic(expected = "protocol fee cannot exceed 100 basis points")]
 fn test_protocol_fee_above_one_percent_is_rejected() {
@@ -247,6 +292,83 @@ fn test_protocol_fee_above_one_percent_is_rejected() {
 
     client.initialize(&admin);
     client.set_protocol_fee(&admin, &0, &101, &treasury);
+}
+
+// ---------------------------------------------------------------------------
+// TEST-54 (#569) – set_max_creates_per_ledger config
+// ---------------------------------------------------------------------------
+
+/// Admin changes the per-ledger create limit; the new limit applies to the
+/// very next create call in the same ledger.
+#[test]
+fn test_set_max_creates_per_ledger_applies_immediately() {
+    let (env, client) = setup();
+    let admin = Address::generate(&env);
+    let employer = Address::generate(&env);
+    let employee = Address::generate(&env);
+    let token_id = setup_token(&env, &employer);
+
+    client.initialize(&admin);
+    client.set_min_deposit(&admin, &0, &100);
+
+    // Tighten the limit to 1 create per ledger (consumes admin nonce 1).
+    client.set_max_creates_per_ledger(&admin, &1, &1);
+    assert_eq!(client.admin_nonce(), 2);
+
+    // First create in this ledger succeeds.
+    let id = client.create_stream(&employer, &employee, &token_id, &1_000, &1, &0, &None, &None);
+    assert_eq!(id, 1);
+
+    // Second create in the same ledger exceeds the new limit.
+    let other_employee = Address::generate(&env);
+    let res = client.try_create_stream(
+        &employer,
+        &other_employee,
+        &token_id,
+        &1_000,
+        &1,
+        &0,
+        &None,
+        &None,
+    );
+    assert!(res.is_err(), "second create must be rejected by the new limit");
+
+    // Advancing to a new ledger resets the per-ledger counter.
+    env.ledger().with_mut(|l| l.sequence_number += 1);
+    let id2 = client.create_stream(&employer, &other_employee, &token_id, &1_000, &1, &0, &None, &None);
+    assert_eq!(id2, 2);
+}
+
+/// A wrong admin nonce on set_max_creates_per_ledger is rejected with E009.
+#[test]
+#[should_panic(expected = "E009")]
+fn test_set_max_creates_per_ledger_wrong_nonce_rejected() {
+    let (env, client) = setup();
+    let admin = Address::generate(&env);
+    client.initialize(&admin);
+
+    client.set_max_creates_per_ledger(&admin, &99, &5);
+}
+
+/// A non-admin caller cannot change the per-ledger create limit.
+#[test]
+fn test_set_max_creates_per_ledger_non_admin_rejected() {
+    let env = Env::default();
+    let contract_id = env.register(StreamContract, ());
+    let client = StreamContractClient::new(&env, &contract_id);
+
+    env.mock_all_auths();
+    let admin = Address::generate(&env);
+    client.initialize(&admin);
+
+    // Fresh env without mocked auths: the attacker has not signed.
+    let env2 = Env::default();
+    env2.register_at(&contract_id, StreamContract, ());
+    let client2 = StreamContractClient::new(&env2, &contract_id);
+    let attacker = Address::generate(&env2);
+
+    let res = client2.try_set_max_creates_per_ledger(&attacker, &0, &5);
+    assert!(res.is_err(), "non-admin must not be able to set the limit");
 }
 
 #[test]
@@ -2138,6 +2260,58 @@ fn test_stream_count_by_token_single_stream() {
 }
 
 /// Token indexes include single and batch-created streams without mixing tokens.
+// ---------------------------------------------------------------------------
+// SC-93 (#461) – archived index entries keep queries correct
+// ---------------------------------------------------------------------------
+
+/// Completed streams can have their index entries archived; the index queries
+/// must still return the correct IDs for the live (non-archived) streams.
+#[test]
+fn test_archived_stream_index_queries_still_correct() {
+    let (env, client) = setup();
+    let admin = Address::generate(&env);
+    let employer = Address::generate(&env);
+    let employee = Address::generate(&env);
+    let token_id = setup_token(&env, &employer);
+
+    client.initialize(&admin);
+    client.set_min_deposit(&admin, &0, &100);
+
+    let active_id = client.create_stream(&employer, &employee, &token_id, &10_000, &10, &0, &None, &None);
+    let completed_id = client.create_stream(&employer, &employee, &token_id, &500, &10, &0, &None, &None);
+
+    // Exhaust the second stream so it becomes a candidate for archival.
+    env.ledger().with_mut(|l| l.timestamp += 100);
+    client.withdraw(&employee, &completed_id);
+    assert_eq!(client.get_stream(&completed_id).status, StreamStatus::Exhausted);
+
+    // Archive the completed stream's index entries.
+    client.archive_stream_indexes(&admin, &completed_id);
+
+    // Queries still return the correct IDs: the active stream remains indexed,
+    // the archived stream is no longer listed but is still retrievable.
+    let employer_ids = client.stream_ids_by_employer(&employer);
+    assert!(employer_ids.contains(active_id));
+    assert!(!employer_ids.contains(completed_id));
+
+    let employee_ids = client.stream_ids_by_employee(&employee);
+    assert!(employee_ids.contains(active_id));
+    assert!(!employee_ids.contains(completed_id));
+
+    let token_ids = client.stream_ids_by_token(&token_id);
+    assert!(token_ids.contains(active_id));
+    assert!(!token_ids.contains(completed_id));
+
+    assert_eq!(client.stream_count_by_employer(&employer), 1);
+    assert_eq!(client.stream_count_by_employee(&employee), 1);
+    assert_eq!(client.stream_count_by_token(&token_id), 1);
+
+    // The archived stream itself is untouched and still readable.
+    let s = client.get_stream(&completed_id);
+    assert_eq!(s.status, StreamStatus::Exhausted);
+    assert_eq!(s.employer, employer);
+}
+
 #[test]
 fn test_stream_count_by_token_multiple_tokens_and_batch() {
     use crate::types::StreamParams;

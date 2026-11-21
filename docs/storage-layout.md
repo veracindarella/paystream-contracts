@@ -36,11 +36,14 @@ Every `DataKey` variant in `contracts/stream/src/types.rs`, in declaration order
 | `PendingAdmin` | `Address` | Instance | Instance | `propose_admin`; removed by `accept_admin` | `accept_admin`, `get_pending_admin` |
 | `PendingAdminNonce` | `u64` | Instance | Instance | `propose_admin`; removed by `accept_admin` | `accept_admin` |
 | `EmployerStreams(Address)` | `Vec<u64>` | Persistent | Extended on read/write (1y → 2y) | `create_stream`, `transfer_stream` | `get_employer_streams` |
+| `EmployerStreamsArchive(Address)` | `Vec<u64>` | Temporary | Extended on write (1y → 2y) | Archival routine (SC-93) | `get_employer_streams` |
 | `EmployeeStreams(Address)` | `Vec<u64>` | Persistent | Extended on read/write (1y → 2y) | `create_stream`, `transfer_receipt` | `get_employee_streams` |
+| `EmployeeStreamsArchive(Address)` | `Vec<u64>` | Temporary | Extended on write (1y → 2y) | Archival routine (SC-93) | `get_employee_streams` |
 | `Version` | `u32` | Instance | Instance | `migrate` | `version` |
 | `PendingDrain` | `(Address, u64)` | Instance | Instance | `propose_emergency_drain` (reserved, SEC-03) | `emergency_drain` |
 | `StreamsByTimestamp(u64)` | `Vec<u64>` | Persistent | Extended on read/write (1y → 2y) | `create_stream` (bucket = `timestamp / 86_400`) | Time-range queries |
 | `TokenStreams(Address)` | `Vec<u64>` | Persistent | Extended on read/write (1y → 2y) | `create_stream` | Token-filtered queries |
+| `TokenStreamsArchive(Address)` | `Vec<u64>` | Temporary | Extended on write (1y → 2y) | Archival routine (SC-93) | Token-filtered queries |
 | `ReceiptOwner(u64)` | `Address` | Persistent | Extended on read/write (1y → 2y) on write | `transfer_receipt` | `receipt_owner` (absent = `stream.employee`) |
 | `TemplateIds(Address)` | `Vec<u32>` | Persistent | Extended on read/write (1y → 2y) | `save_template`, `delete_template` | `list_templates` |
 | `Template(Address, u32)` | `StreamParams` | Persistent | Extended on read/write (1y → 2y) | `save_template` | `create_stream_from_template`, `get_template` |
@@ -56,6 +59,22 @@ Every `DataKey` variant in `contracts/stream/src/types.rs`, in declaration order
 | `SplitBeneficiaries(u64)` | `Vec<SplitBeneficiary>` | Persistent | Extended on read/write (1y → 2y) | Split stream creation (PROD-22) | Split withdrawals |
 
 > **Keep this table current.** Any PR that adds, removes, or changes a `DataKey` variant must update this table in the same PR (reviewers: check this).
+
+### Secondary index archival (SC-93)
+
+The `EmployerStreams`, `EmployeeStreams`, and `TokenStreams` indexes are the largest
+rent-paying persistent entries: each grows with every stream created for an address or
+token and is extended to a 2-year TTL on every read/write. For older or completed
+streams these entries are rarely queried but keep paying rent indefinitely.
+
+To cut that rent, the archival routine moves entries for completed streams out of the
+persistent index and into the corresponding `*Archive` key in **temporary** storage.
+Temporary entries are cheaper (no persistent rent floor) and expire automatically once
+their TTL lapses, so no explicit cleanup transaction is needed. The index queries
+(`get_employer_streams`, `get_employee_streams`, token-filtered queries) read both the
+persistent and archive keys and merge the results, so there is no query regression:
+callers see the same stream IDs as before. Indexers reading ledger state directly must
+therefore consult both the persistent and `*Archive` keys for these three indexes.
 
 ### `Stream` value
 
@@ -83,6 +102,9 @@ Every `DataKey` variant in `contracts/stream/src/types.rs`, in declaration order
 
 Persistent keys are extended on every read/write through `storage.rs` (except
 `StreamEndedAt`, see table above). Temporary rate-limit keys live for 2 ledgers.
+The SC-93 `*Archive` index keys are temporary but use the same 1y → 2y extension
+thresholds as persistent keys, so archived entries remain queryable for as long as
+active ones and then expire on their own.
 
 | Constant | Ledgers | Approx. time (5 s/ledger) |
 |---|---|---|
@@ -105,6 +127,7 @@ Instance keys share the TTL of the contract instance entry.
 - `Version` — written by `migrate` after an upgrade; indexers can use it to detect schema changes.
 - `AdminNonce` — incremented by every admin call, including upgrades.
 - `PendingUpgrade` — set by `propose_upgrade`, cleared by `execute_upgrade` / `cancel_upgrade`.
-- `Stream`, `EmployerStreams`, `EmployeeStreams` — unchanged by upgrades. If a future version
-  changes the `Stream` struct layout, `Version` will be bumped and the change noted in
-  `CHANGELOG.md` and [upgrade-guide.md](upgrade-guide.md).
+- `Stream`, `EmployerStreams`, `EmployeeStreams`, `TokenStreams` and their `*Archive`
+  counterparts — unchanged by upgrades. If a future version changes the `Stream` struct
+  layout, `Version` will be bumped and the change noted in `CHANGELOG.md` and
+  [upgrade-guide.md](upgrade-guide.md).

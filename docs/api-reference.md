@@ -228,6 +228,62 @@ stellar contract invoke --id <STREAM_ID> --source <ANY_KEY> --network testnet \
 
 ---
 
+### `get_protocol_fee_config`
+
+Return the current protocol fee configuration in a single read-only call, for
+dashboards and integrators that need to display the fee. Returns `None` when
+fees are disabled (`fee_bps == 0`), otherwise the fee in basis points and the
+treasury address that receives collected fees.
+
+**Caller:** Anyone (no auth required)
+
+**Parameters:** none
+
+**Returns:** `Option<(u32, Address)>` — `None` when fees are disabled, otherwise
+`Some((fee_bps, treasury))`
+
+**Example:**
+```bash
+stellar contract invoke --id <STREAM_ID> --source <ANY_KEY> --network testnet \
+  -- get_protocol_fee_config
+```
+
+---
+
+### `archive_stream_indexes`
+
+Admin entry point (SC-93) that moves the `EmployerStreams`, `EmployeeStreams`
+and `TokenStreams` secondary indexes for the supplied streams out of persistent
+storage into temporary storage with a TTL, cutting rent for older/completed
+streams. The stream records themselves are untouched.
+
+**Caller:** Admin
+
+| Parameter | Type | Description |
+|---|---|---|
+| `admin` | `Address` | Must equal the stored admin |
+| `nonce` | `u64` | Current admin nonce (replay protection) |
+| `stream_ids` | `Vec<u64>` | Streams whose index entries should be archived (max 50) |
+
+**Returns:** nothing
+
+**Errors:**
+- Panics if `admin` auth fails or does not match the stored admin
+- Panics if `nonce` does not match the stored admin nonce (E009)
+- E029 if `stream_ids` contains more than 50 entries
+
+**Note:** Index queries (`stream_ids_by_employer`, `stream_ids_by_employee`,
+`stream_ids_by_token`, and their paginated/count variants) transparently
+include archived entries, so archival causes no query regressions.
+
+**Example:**
+```bash
+stellar contract invoke --id <STREAM_ID> --source <ADMIN_KEY> --network testnet \
+  -- archive_stream_indexes --admin <ADMIN_ADDRESS> --nonce 4 --stream_ids '[1,2,3]'
+```
+
+---
+
 ### `create_stream`
 
 Employer creates a salary stream and deposits funds into the contract escrow.
@@ -1300,6 +1356,8 @@ Return a page of stream IDs funded with a token, in creation order. The requeste
 | `limit` | `u64` | Maximum number of IDs to return (capped at 50) |
 
 **Returns:** `Vec<u64>` — stream ID page
+
+**Note:** Entries archived to temporary storage by `archive_stream_indexes` (SC-93) are included transparently; results are identical to before archival.
 
 **Example:**
 ```bash

@@ -1,6 +1,31 @@
 {
   "_comment": "Baseline interface spec for the stream contract. Regenerate with scripts/check-interface.sh --update after intentional public interface changes.",
   "contract": "stream",
-  "functions": [],
+  "functions": [
+    {
+      "name": "get_protocol_fee_config",
+      "doc": "Returns the current protocol fee configuration as (fee_bps, treasury), or None when fees are disabled. Read-only.",
+      "inputs": [],
+      "outputs": [
+        {
+          "name": "config",
+          "type": "Option<(u32, Address)>"
+        }
+      ],
+      "read_only": true
+    },
+    {
+      "name": "archive_stream",
+      "doc": "Archives a completed stream, moving its secondary index entries out of persistent storage to reduce rent. No query regressions; archived streams remain resolvable via the archive path.",
+      "inputs": [
+        {
+          "name": "stream_id",
+          "type": "u64"
+        }
+      ],
+      "outputs": [],
+      "read_only": false
+    }
+  ],
   "events": []
 }

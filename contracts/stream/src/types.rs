@@ -150,7 +150,9 @@ pub enum DataKey {
     AutoTopup(u64),
     /// Minimum deposit enforced on create_stream.
     MinDeposit,
-    /// Optional protocol fee configuration.
+    /// Optional protocol fee configuration: `ProtocolFeeConfig` (fee in bps plus
+    /// treasury address). Absent means protocol fees are disabled, in which case
+    /// `get_protocol_fee_config` returns `None`.
     ProtocolFee,
     /// Monotonically-increasing nonce for admin operations (replay protection).
     AdminNonce,

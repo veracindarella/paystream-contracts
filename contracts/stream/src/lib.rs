@@ -2287,6 +2287,55 @@ impl StreamContract {
         get_protocol_fee(&env)
     }
 
+    /// Return the current protocol fee configuration for dashboards and
+    /// integrators (SC-69).
+    ///
+    /// Read-only. Returns `Some((fee_bps, treasury))` when a non-zero fee is
+    /// configured, or `None` when fees are disabled or have never been set.
+    ///
+    /// # Returns
+    /// `Option<(u32, Address)>` — fee in basis points and the treasury that
+    /// receives collected fees.
+    pub fn get_protocol_fee_config(env: Env) -> Option<(u32, Address)> {
+        let (fee_bps, treasury) = get_protocol_fee(&env);
+        if fee_bps == 0 {
+            return None;
+        }
+        treasury.map(|t| (fee_bps, t))
+    }
+
+    /// Move a completed stream's secondary indexes (employer, employee, token)
+    /// from persistent to temporary storage to cut rent (SC-93).
+    ///
+    /// Only Cancelled or Exhausted streams are eligible. Archived index entries
+    /// remain readable: the index query entry points merge temporary-storage
+    /// entries with live persistent entries, so results are unchanged.
+    ///
+    /// # Parameters
+    /// - `admin` — must match the stored admin (requires auth)
+    /// - `nonce` — current admin nonce (replay protection)
+    /// - `stream_id` — ID of the completed stream whose indexes are archived
+    ///
+    /// # Errors
+    /// - Panics if `admin` auth fails or does not match the stored admin
+    /// - E009 if `nonce` is wrong
+    /// - E015 if the stream does not exist
+    /// - E030 if the stream is not Cancelled or Exhausted
+    pub fn archive_stream_indexes(env: Env, admin: Address, nonce: u64, stream_id: u64) {
+        admin.require_auth();
+        let stored_admin = get_admin(&env);
+        assert_eq!(admin, stored_admin, "{}", ERR_NOT_ADMIN);
+        consume_admin_nonce(&env, nonce);
+        let stream = load_stream_any(&env, stream_id).expect(ERR_STREAM_NOT_FOUND);
+        assert!(
+            stream.status == StreamStatus::Cancelled || stream.status == StreamStatus::Exhausted,
+            "{}",
+            ERR_STREAM_NOT_ENDED
+        );
+        storage::archive_stream_indexes(&env, &stream);
+        events::stream_archived(&env, stream_id);
+    }
+
     /// Return all stream IDs owned by `employer`.
     ///
     /// # Parameters
