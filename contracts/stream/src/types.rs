@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 
-use soroban_sdk::{contracttype, Address};
+use soroban_sdk::{contracterror, contracttype, Address};
 
 /// Status of a salary stream.
 #[contracttype]
@@ -238,9 +238,254 @@ pub enum DataKey {
 /// | E021 | ERR_ADMIN_NOT_SET       | Admin has not been initialised                     |
 /// | E022 | ERR_STOP_TIME_PAST      | `stop_time` must be in the future                  |
 /// | E023 | ERR_AMOUNT_NOT_POSITIVE | Amount must be positive                            |
-/// | E025 | ERR_INVALID_AUTO_TOPUP  | Invalid auto top-up parameters                     |
-/// | E026 | ERR_NO_AUTO_TOPUP       | No auto top-up configured for the stream           |
+/// | E024 | ERR_BAD_PENDING_NONCE   | Invalid pending admin nonce                        |
+/// | E025 | ERR_NO_PENDING_UPGRADE  | No pending upgrade proposal                        |
+/// | E026 | ERR_DRAIN_NOT_PAUSED    | Contract must be paused before emergency drain     |
+/// | E027 | ERR_NO_PENDING_DRAIN    | No pending emergency drain proposal                |
+/// | E028 | ERR_NEW_EMPLOYER_IS_EMPLOYEE | new_employer equals employee                  |
 /// | E029 | ERR_BATCH_TOO_LARGE     | Batch contains more than 50 streams                |
+/// | E030 | ERR_NOT_RECEIPT_OWNER   | Caller does not hold the stream receipt            |
+/// | E031 | ERR_TEMPLATE_NOT_FOUND  | Template not found                                 |
+/// | E032 | ERR_SPLIT_TOO_MANY      | Split stream has more than 20 beneficiaries        |
+/// | E033 | ERR_SPLIT_TOO_FEW       | Split stream has fewer than 2 beneficiaries        |
+/// | E034 | ERR_UPGRADE_TIMELOCK_ACTIVE | Upgrade timelock has not yet expired           |
+/// | E035 | ERR_CLIFF_AFTER_STOP    | cliff_time is after stop_time                      |
+/// | E036 | ERR_STOP_TIME_TOO_FAR   | stop_time exceeds 10 years from now                |
+/// | E037 | ERR_RATE_LIMIT_EXCEEDED | Per-ledger creation rate limit exceeded            |
+/// | E038 | ERR_SPLIT_BASIS_INVALID | Split basis points do not sum to 10000             |
+/// | E039 | ERR_INVALID_STOP_TIME   | stop_time precedes last_withdraw_time              |
+/// | E040 | ERR_STREAM_NOT_ENDED    | Stream is not cancelled or exhausted               |
+/// | E041 | ERR_NO_AUTO_TOPUP       | No auto top-up configured for the stream           |
+/// | E042 | ERR_INVALID_AUTO_TOPUP  | Invalid auto top-up parameters                     |
+/// | E043 | ERR_ARCHIVE_TOO_EARLY   | Archive waiting period has not elapsed             |
+///
+/// The typed [`Error`] enum below is the single source of truth for these
+/// codes; the table is kept in sync with it.
+/// Typed contract error returned by fallible entrypoints.
+///
+/// This enum is the single source of truth for error codes. Each variant's
+/// discriminant matches the `E0xx` prefix of the corresponding `ERR_*` string
+/// constant (see [`Error::code`] and [`Error::from_code`]), so callers can
+/// migrate from string matching to typed `Result` handling without changing
+/// the numeric codes they already depend on.
+///
+/// # Panic policy
+///
+/// Soroban's `#[contractimpl]` entrypoints can only return `Result<T, Error>`
+/// where `Error` is a `#[contracterror]` enum. The following failures cannot be
+/// expressed as a returned `Result` and therefore still panic (trap):
+///
+/// * **Authorization failures** — `Address::require_auth` traps when the
+///   caller has not signed. This is enforced by the host, not by this contract.
+/// * **Host-level failures** — storage access errors, missing ledger entries,
+///   and cross-contract call failures raised by the Soroban host.
+/// * **Invariant violations** — internal `assert!`/`panic!` guards that should
+///   be unreachable if the contract is correct (e.g. corrupted storage).
+///
+/// All *documented* validation failures are returned as `Error` variants.
+#[contracterror]
+#[derive(Copy, Clone, Debug, Eq, PartialEq, PartialOrd, Ord)]
+#[repr(u32)]
+pub enum Error {
+    /// E001: `rate_per_second` must be > 0.
+    ZeroRate = 1,
+    /// E002: `deposit` must be > 0.
+    ZeroDeposit = 2,
+    /// E003: reentrant withdraw detected.
+    Reentrant = 3,
+    /// E004: arithmetic overflow in claimable calculation.
+    Overflow = 4,
+    /// E005: cannot top up a cancelled stream.
+    StreamCancelled = 5,
+    /// E006: cannot top up an exhausted stream.
+    StreamExhausted = 6,
+    /// E007: deposit below the configured minimum.
+    BelowMinDeposit = 7,
+    /// E008: `rate_per_second` exceeds the maximum.
+    InvalidRate = 8,
+    /// E009: invalid admin nonce.
+    BadNonce = 9,
+    /// E010: no pending admin set.
+    NoPendingAdmin = 10,
+    /// E011: caller is not the pending admin.
+    NotPendingAdmin = 11,
+    /// E012: caller is not the contract admin.
+    NotAdmin = 12,
+    /// E013: contract is paused.
+    ContractPaused = 13,
+    /// E014: batch params list must not be empty.
+    EmptyParams = 14,
+    /// E015: stream ID does not exist.
+    StreamNotFound = 15,
+    /// E016: caller is not the stream's employee or receipt holder.
+    NotEmployee = 16,
+    /// E017: stream is not in Active or Exhausted status.
+    StreamNotActive = 17,
+    /// E018: caller is not the stream's employer.
+    NotEmployer = 18,
+    /// E019: stream is not in Paused status.
+    StreamNotPaused = 19,
+    /// E020: stream is already Cancelled or Exhausted.
+    StreamAlreadyEnded = 20,
+    /// E021: admin has not been initialised.
+    AdminNotSet = 21,
+    /// E022: `stop_time` must be in the future.
+    StopTimePast = 22,
+    /// E023: amount must be positive.
+    AmountNotPositive = 23,
+    /// E024: invalid pending admin nonce.
+    BadPendingNonce = 24,
+    /// E025: no pending upgrade proposal exists.
+    NoPendingUpgrade = 25,
+    /// E026: contract must be paused before emergency drain.
+    DrainNotPaused = 26,
+    /// E027: no pending emergency drain proposal exists.
+    NoPendingDrain = 27,
+    /// E028: `new_employer` must differ from the stream employee.
+    NewEmployerIsEmployee = 28,
+    /// E029: batch exceeds the maximum of 50 streams.
+    BatchTooLarge = 29,
+    /// E030: caller does not hold the stream receipt.
+    NotReceiptOwner = 30,
+    /// E031: template not found.
+    TemplateNotFound = 31,
+    /// E032: split stream cannot have more than 20 beneficiaries.
+    SplitTooMany = 32,
+    /// E033: split stream must have at least 2 beneficiaries.
+    SplitTooFew = 33,
+    /// E034: upgrade timelock has not yet expired.
+    UpgradeTimelockActive = 34,
+    /// E035: `cliff_time` must be <= `stop_time`.
+    CliffAfterStop = 35,
+    /// E036: `stop_time` must not exceed 10 years from now.
+    StopTimeTooFar = 36,
+    /// E037: per-employer, per-ledger stream creation rate limit exceeded.
+    RateLimitExceeded = 37,
+    /// E038: split beneficiary basis points must sum to 10000.
+    SplitBasisInvalid = 38,
+    /// E039: `stop_time` precedes `last_withdraw_time`.
+    InvalidStopTime = 39,
+    /// E040: stream is not cancelled or exhausted.
+    StreamNotEnded = 40,
+    /// E041: no auto top-up configured for this stream.
+    NoAutoTopup = 41,
+    /// E042: invalid auto top-up parameters.
+    InvalidAutoTopup = 42,
+    /// E043: archive waiting period has not elapsed.
+    ArchiveTooEarly = 43,
+}
+
+impl Error {
+    /// Returns the numeric `E0xx` code for this error.
+    pub fn code(&self) -> u32 {
+        *self as u32
+    }
+
+    /// Maps a numeric `E0xx` code back to its `Error` variant.
+    ///
+    /// Returns `None` for codes that are not part of the documented set.
+    pub fn from_code(code: u32) -> Option<Error> {
+        match code {
+            1 => Some(Error::ZeroRate),
+            2 => Some(Error::ZeroDeposit),
+            3 => Some(Error::Reentrant),
+            4 => Some(Error::Overflow),
+            5 => Some(Error::StreamCancelled),
+            6 => Some(Error::StreamExhausted),
+            7 => Some(Error::BelowMinDeposit),
+            8 => Some(Error::InvalidRate),
+            9 => Some(Error::BadNonce),
+            10 => Some(Error::NoPendingAdmin),
+            11 => Some(Error::NotPendingAdmin),
+            12 => Some(Error::NotAdmin),
+            13 => Some(Error::ContractPaused),
+            14 => Some(Error::EmptyParams),
+            15 => Some(Error::StreamNotFound),
+            16 => Some(Error::NotEmployee),
+            17 => Some(Error::StreamNotActive),
+            18 => Some(Error::NotEmployer),
+            19 => Some(Error::StreamNotPaused),
+            20 => Some(Error::StreamAlreadyEnded),
+            21 => Some(Error::AdminNotSet),
+            22 => Some(Error::StopTimePast),
+            23 => Some(Error::AmountNotPositive),
+            24 => Some(Error::BadPendingNonce),
+            25 => Some(Error::NoPendingUpgrade),
+            26 => Some(Error::DrainNotPaused),
+            27 => Some(Error::NoPendingDrain),
+            28 => Some(Error::NewEmployerIsEmployee),
+            29 => Some(Error::BatchTooLarge),
+            30 => Some(Error::NotReceiptOwner),
+            31 => Some(Error::TemplateNotFound),
+            32 => Some(Error::SplitTooMany),
+            33 => Some(Error::SplitTooFew),
+            34 => Some(Error::UpgradeTimelockActive),
+            35 => Some(Error::CliffAfterStop),
+            36 => Some(Error::StopTimeTooFar),
+            37 => Some(Error::RateLimitExceeded),
+            38 => Some(Error::SplitBasisInvalid),
+            39 => Some(Error::InvalidStopTime),
+            40 => Some(Error::StreamNotEnded),
+            41 => Some(Error::NoAutoTopup),
+            42 => Some(Error::InvalidAutoTopup),
+            43 => Some(Error::ArchiveTooEarly),
+            _ => None,
+        }
+    }
+
+    /// Returns the legacy `ERR_*` string constant for this error.
+    ///
+    /// Kept so existing callers that match on panic strings keep working while
+    /// they migrate to typed `Result` handling.
+    pub fn message(&self) -> &'static str {
+        match self {
+            Error::ZeroRate => ERR_ZERO_RATE,
+            Error::ZeroDeposit => ERR_ZERO_DEPOSIT,
+            Error::Reentrant => ERR_REENTRANT,
+            Error::Overflow => ERR_OVERFLOW,
+            Error::StreamCancelled => ERR_STREAM_CANCELLED,
+            Error::StreamExhausted => ERR_STREAM_EXHAUSTED,
+            Error::BelowMinDeposit => ERR_BELOW_MIN_DEPOSIT,
+            Error::InvalidRate => ERR_INVALID_RATE,
+            Error::BadNonce => ERR_BAD_NONCE,
+            Error::NoPendingAdmin => ERR_NO_PENDING_ADMIN,
+            Error::NotPendingAdmin => ERR_NOT_PENDING_ADMIN,
+            Error::NotAdmin => ERR_NOT_ADMIN,
+            Error::ContractPaused => ERR_CONTRACT_PAUSED,
+            Error::EmptyParams => ERR_EMPTY_PARAMS,
+            Error::StreamNotFound => ERR_STREAM_NOT_FOUND,
+            Error::NotEmployee => ERR_NOT_EMPLOYEE,
+            Error::StreamNotActive => ERR_STREAM_NOT_ACTIVE,
+            Error::NotEmployer => ERR_NOT_EMPLOYER,
+            Error::StreamNotPaused => ERR_STREAM_NOT_PAUSED,
+            Error::StreamAlreadyEnded => ERR_STREAM_ALREADY_ENDED,
+            Error::AdminNotSet => ERR_ADMIN_NOT_SET,
+            Error::StopTimePast => ERR_STOP_TIME_PAST,
+            Error::AmountNotPositive => ERR_AMOUNT_NOT_POSITIVE,
+            Error::BadPendingNonce => ERR_BAD_PENDING_NONCE,
+            Error::NoPendingUpgrade => ERR_NO_PENDING_UPGRADE,
+            Error::DrainNotPaused => ERR_DRAIN_NOT_PAUSED,
+            Error::NoPendingDrain => ERR_NO_PENDING_DRAIN,
+            Error::NewEmployerIsEmployee => ERR_NEW_EMPLOYER_IS_EMPLOYEE,
+            Error::BatchTooLarge => ERR_BATCH_TOO_LARGE,
+            Error::NotReceiptOwner => ERR_NOT_RECEIPT_OWNER,
+            Error::TemplateNotFound => ERR_TEMPLATE_NOT_FOUND,
+            Error::SplitTooMany => ERR_SPLIT_TOO_MANY,
+            Error::SplitTooFew => ERR_SPLIT_TOO_FEW,
+            Error::UpgradeTimelockActive => ERR_UPGRADE_TIMELOCK_ACTIVE,
+            Error::CliffAfterStop => ERR_CLIFF_AFTER_STOP,
+            Error::StopTimeTooFar => ERR_STOP_TIME_TOO_FAR,
+            Error::RateLimitExceeded => ERR_RATE_LIMIT_EXCEEDED,
+            Error::SplitBasisInvalid => ERR_SPLIT_BASIS_INVALID,
+            Error::InvalidStopTime => ERR_INVALID_STOP_TIME,
+            Error::StreamNotEnded => ERR_STREAM_NOT_ENDED,
+            Error::NoAutoTopup => ERR_NO_AUTO_TOPUP,
+            Error::InvalidAutoTopup => ERR_INVALID_AUTO_TOPUP,
+            Error::ArchiveTooEarly => ERR_ARCHIVE_TOO_EARLY,
+        }
+    }
+}
+
 /// Error returned when a payroll rate is zero.
 pub const ERR_ZERO_RATE: &str = "E001: rate_per_second must be greater than zero";
 /// Error returned when a deposit is not positive.
@@ -309,27 +554,27 @@ pub const ERR_CLIFF_AFTER_STOP: &str = "E035: cliff_time must be <= stop_time";
 /// Maximum number of streams in one batch call (create/cancel/pause/resume).
 pub const MAX_BATCH_SIZE: u32 = 50;
 
-/// E030: stop_time extends beyond 10-year limit from now
-pub const ERR_STOP_TIME_TOO_FAR: &str = "E030: stop_time must not exceed 10 years from now";
+/// E036: stop_time extends beyond 10-year limit from now
+pub const ERR_STOP_TIME_TOO_FAR: &str = "E036: stop_time must not exceed 10 years from now";
 
 /// Maximum stop_time window: 10 years in seconds (315,360,000 seconds)
 pub const MAX_STOP_TIME_OFFSET: u64 = 315_360_000;
 
 // Restored from a97bb5d (dropped by a merge).
-/// E030: per-employer, per-ledger stream creation rate limit exceeded.
-pub const ERR_RATE_LIMIT_EXCEEDED: &str = "E030: stream creation rate limit exceeded for this ledger";
+/// E037: per-employer, per-ledger stream creation rate limit exceeded.
+pub const ERR_RATE_LIMIT_EXCEEDED: &str = "E037: stream creation rate limit exceeded for this ledger";
 
 // Restored from a97bb5d (dropped by a merge).
 /// Default maximum number of streams an employer may create in a single ledger.
 pub const DEFAULT_MAX_CREATES_PER_LEDGER: u32 = 50;
 
 // Restored from cf48a49 (dropped by a merge).
-/// E030: split beneficiary basis points must sum to 10000 (100%)
-pub const ERR_SPLIT_BASIS_INVALID: &str = "E030: split beneficiary basis points must sum to 10000";
+/// E038: split beneficiary basis points must sum to 10000 (100%)
+pub const ERR_SPLIT_BASIS_INVALID: &str = "E038: split beneficiary basis points must sum to 10000";
 
 // Restored from cf48a49 (dropped by a merge).
-/// E031: split stream must have at least 2 beneficiaries
-pub const ERR_SPLIT_TOO_FEW: &str = "E031: split stream must have at least 2 beneficiaries";
+/// E033: split stream must have at least 2 beneficiaries
+pub const ERR_SPLIT_TOO_FEW: &str = "E033: split stream must have at least 2 beneficiaries";
 
 // Restored from cf48a49 (dropped by a merge).
 /// E032: split stream cannot have more than 20 beneficiaries
@@ -340,28 +585,28 @@ pub const ERR_SPLIT_TOO_MANY: &str = "E032: split stream cannot have more than 2
 pub const MAX_SPLIT_BENEFICIARIES: u32 = 20;
 
 // Restored from c3cb54c (dropped by a merge).
-/// `update_stop_time` would move the stop time before the last withdrawal.
-pub const ERR_INVALID_STOP_TIME: &str = "E030: stop_time precedes last_withdraw_time";
+/// E039: `update_stop_time` would move the stop time before the last withdrawal.
+pub const ERR_INVALID_STOP_TIME: &str = "E039: stop_time precedes last_withdraw_time";
 
 // Restored from a74e8f6 (dropped by a merge).
 /// `execute_upgrade` was called before the timelock expired.
 pub const ERR_UPGRADE_TIMELOCK_ACTIVE: &str = "E034: upgrade timelock has not yet expired";
 
 // Restored from ce6fe77 (dropped by a merge).
-/// `archive_stream` was called on a stream that is still Active or Paused.
-pub const ERR_STREAM_NOT_ENDED: &str = "E030: stream is not cancelled or exhausted";
+/// E040: `archive_stream` was called on a stream that is still Active or Paused.
+pub const ERR_STREAM_NOT_ENDED: &str = "E040: stream is not cancelled or exhausted";
 
 // Restored from a74e8f6 (dropped by a merge).
-/// No auto top-up is configured for the stream.
-pub const ERR_NO_AUTO_TOPUP: &str = "E031: no auto top-up configured for this stream";
+/// E041: no auto top-up is configured for the stream.
+pub const ERR_NO_AUTO_TOPUP: &str = "E041: no auto top-up configured for this stream";
 
 // Restored from a74e8f6 (dropped by a merge).
-/// Auto top-up threshold, amount or cap is not positive / consistent.
-pub const ERR_INVALID_AUTO_TOPUP: &str = "E030: invalid auto top-up parameters";
+/// E042: auto top-up threshold, amount or cap is not positive / consistent.
+pub const ERR_INVALID_AUTO_TOPUP: &str = "E042: invalid auto top-up parameters";
 
 // Restored from ce6fe77 (dropped by a merge).
-/// `archive_stream` was called before `ARCHIVE_WAIT_PERIOD` elapsed.
-pub const ERR_ARCHIVE_TOO_EARLY: &str = "E031: archive waiting period has not elapsed";
+/// E043: `archive_stream` was called before `ARCHIVE_WAIT_PERIOD` elapsed.
+pub const ERR_ARCHIVE_TOO_EARLY: &str = "E043: archive waiting period has not elapsed";
 
 // Restored from 24db2de (dropped by a merge).
 /// Protocol fee configuration. Absent configuration means fees are disabled.

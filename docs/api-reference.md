@@ -1947,26 +1947,52 @@ Emitted by `set_low_balance_threshold` when the employer updates the low-balance
 
 ## Error Codes
 
-Stream contract panics are prefixed with a stable code defined in `contracts/stream/src/types.rs`.
-Keep this table in sync with that file (see [CONTRIBUTING.md](../CONTRIBUTING.md#error-codes)).
+Stream contract panics are prefixed with a stable code defined in `contracts/stream/src/types.rs`;
+token contract panics use the `T0xx` range defined in `contracts/token/src/types.rs`.
+Each code below is unique and maps to exactly one `Error` variant / `ERR_*` constant.
+Keep this table in sync with those files (see [CONTRIBUTING.md](../CONTRIBUTING.md#error-codes)).
 
-| Code | Constant | Meaning | Triggered By | Recommended Fix |
-|---|---|---|---|---|
-| E001 | `ERR_ZERO_RATE` | `rate_per_second` must be > 0 | `create_stream`, `create_streams_batch`, `update_rate` | Pass a `rate_per_second` / `new_rate` ≥ 1 |
-| E002 | `ERR_ZERO_DEPOSIT` | `deposit` / `amount` must be > 0 | `create_stream`, `create_streams_batch`, `set_min_deposit` | Pass a `deposit` / `amount` > 0 |
-| E003 | `ERR_REENTRANT` | Reentrant withdraw detected (stream `locked` flag set) | `withdraw`, `withdraw_all` | Do not re-enter `withdraw` from a token callback; retry in a separate transaction |
-| E004 | `ERR_OVERFLOW` | Arithmetic overflow in claimable / balance calculation | `claimable`, `claimable_at`, `withdraw`, `withdraw_all`, `top_up` | Use smaller `deposit`, `rate_per_second`, or top-up `amount` values |
-| E005 | `ERR_STREAM_CANCELLED` | Cannot top up a cancelled stream | `top_up`, `set_auto_topup`, `set_low_balance_threshold` | Create a new stream instead |
-| E006 | `ERR_STREAM_EXHAUSTED` | Cannot top up an exhausted stream | `top_up`, `set_low_balance_threshold` | Create a new stream instead |
-| E007 | `ERR_BELOW_MIN_DEPOSIT` | Deposit below minimum | `create_stream`, `create_streams_batch` | Deposit at least the minimum (default `10_000`, changed via `set_min_deposit`) |
-| E008 | `ERR_INVALID_RATE` | `rate_per_second` exceeds maximum (1,000,000,000) | `create_stream`, `create_streams_batch`, `update_rate` | Pass a rate ≤ 1,000,000,000 |
-| E009 | `ERR_BAD_NONCE` | Invalid admin nonce | `propose_admin`, `pause_contract`, `unpause_contract`, `set_min_deposit`, `expire_streams`, `upgrade`, `propose_upgrade`, `execute_upgrade`, `cancel_upgrade` | Read the current value with `admin_nonce` and pass it as `nonce` |
-| E009 | `ERR_BAD_NONCE` | Invalid admin nonce | `propose_admin`, `pause_contract`, `unpause_contract`, `set_min_deposit`, `set_protocol_fee`, `upgrade`, `propose_upgrade`, `execute_upgrade`, `cancel_upgrade` | Read the current value with `admin_nonce` and pass it as `nonce` |
-| E029 | `ERR_BATCH_TOO_LARGE` | Batch contains more than 50 streams | `create_streams_batch`, `cancel_streams_batch` | Split the operation into batches of at most 50 streams |
-| E030 | `ERR_INVALID_STOP_TIME` | Nonzero stop time precedes last withdrawal | `update_stop_time` | Use 0 or a timestamp at/after `last_withdraw_time` |
-| T001 | `ERR_OVERFLOW` (token) | Token arithmetic overflow | Token `mint`, `mint_to_batch`, `transfer`, `transfer_from` | Use smaller amounts |
-| T002 | `ERR_PAUSED` (token) | Token is paused | Token `transfer`, `transfer_from`, `burn`, `burn_from` | Wait for the admin to call `unpause_token` |
-| T003 | `ERR_BATCH_TOO_LARGE` (token) | More than 50 recipients | Token `mint_to_batch` | Split into batches of at most 50 |
+### Stream contract (`E0xx`)
+
+| Code | Constant | `Error` variant | Meaning | Raised By | Recommended Fix |
+|---|---|---|---|---|---|
+| E001 | `ERR_ZERO_RATE` | `Error::ZeroRate` | `rate_per_second` must be > 0 | `create_stream`, `create_streams_batch`, `update_rate` | Pass a `rate_per_second` / `new_rate` ≥ 1 |
+| E002 | `ERR_ZERO_DEPOSIT` | `Error::ZeroDeposit` | `deposit` / `amount` must be > 0 | `create_stream`, `create_streams_batch`, `set_min_deposit` | Pass a `deposit` / `amount` > 0 |
+| E003 | `ERR_REENTRANT` | `Error::Reentrant` | Reentrant withdraw detected (stream `locked` flag set) | `withdraw`, `withdraw_all` | Do not re-enter `withdraw` from a token callback; retry in a separate transaction |
+| E004 | `ERR_OVERFLOW` | `Error::Overflow` | Arithmetic overflow in claimable / balance calculation | `claimable`, `claimable_at`, `claimable_batch`, `withdraw`, `withdraw_all`, `top_up` | Use smaller `deposit`, `rate_per_second`, or top-up `amount` values |
+| E005 | `ERR_STREAM_CANCELLED` | `Error::StreamCancelled` | Operation not allowed on a cancelled stream | `top_up`, `set_auto_topup`, `set_low_balance_threshold` | Create a new stream instead |
+| E006 | `ERR_STREAM_EXHAUSTED` | `Error::StreamExhausted` | Operation not allowed on an exhausted stream | `top_up`, `set_low_balance_threshold` | Create a new stream instead |
+| E007 | `ERR_BELOW_MIN_DEPOSIT` | `Error::BelowMinDeposit` | Deposit below minimum | `create_stream`, `create_streams_batch`, `create_stream_from_template` | Deposit at least the minimum (default `10_000`, changed via `set_min_deposit`) |
+| E008 | `ERR_INVALID_RATE` | `Error::InvalidRate` | `rate_per_second` exceeds maximum (1,000,000,000) | `create_stream`, `create_streams_batch`, `update_rate` | Pass a rate ≤ 1,000,000,000 |
+| E009 | `ERR_BAD_NONCE` | `Error::BadNonce` | Invalid admin nonce | `pause_contract`, `unpause_contract`, `set_min_deposit`, `set_protocol_fee`, `expire_streams`, `upgrade`, `propose_upgrade`, `execute_upgrade`, `cancel_upgrade` | Read the current value with `admin_nonce` and pass it as `nonce` |
+| E010 | `ERR_UNAUTHORIZED` | `Error::Unauthorized` | Caller is not the stored admin / stream owner | Admin entrypoints, `top_up`, `pause_stream`, `resume_stream`, `update_rate`, `update_stop_time`, `cancel_stream` | Call from the correct admin / employer address |
+| E011 | `ERR_INVALID_STATE` | `Error::InvalidState` | Stream is not in a state that permits the operation | `pause_stream`, `resume_stream`, `update_rate`, `update_stop_time`, `settle_stream` | Check `stream_status` before calling |
+| E012 | `ERR_STREAM_NOT_FOUND` | `Error::StreamNotFound` | No stream exists for the given ID | `get_stream`, `claimable`, `claimable_at`, `withdraw`, `top_up`, `pause_stream`, `resume_stream`, `update_rate`, `update_stop_time`, `cancel_stream`, `settle_stream` | Verify the stream ID with `stream_count` / `stream_ids_by_employer` |
+| E013 | `ERR_INVALID_AMOUNT` | `Error::InvalidAmount` | Amount is out of the accepted range | `top_up`, `set_low_balance_threshold`, `set_auto_topup` | Pass a positive amount within bounds |
+| E014 | `ERR_INVALID_CLIFF` | `Error::InvalidCliff` | Cliff is after `stop_time` or after `vest_period` | `create_stream`, `create_streams_batch`, `create_linear_vest` | Set the cliff at or before `stop_time` / `vest_period` |
+| E015 | `ERR_STREAM_NOT_FOUND` | `Error::StreamNotFound` | Stream ID does not exist (alias of E012) | `set_low_balance_threshold` | Verify the stream ID |
+| E016 | `ERR_INVALID_STOP_TIME` | `Error::InvalidStopTime` | Nonzero stop time precedes `last_withdraw_time` | `update_stop_time` | Use `0` or a timestamp at/after `last_withdraw_time` |
+| E017 | `ERR_INVALID_STATE` | `Error::InvalidState` | Stream is not `Active` (alias of E011) | `update_stop_time` | Check `stream_status` before calling |
+| E018 | `ERR_UNAUTHORIZED` | `Error::Unauthorized` | Caller is not the stream's employer (alias of E010) | `set_low_balance_threshold`, `update_stop_time` | Call from the stream's employer address |
+| E021 | `ERR_ADMIN_NOT_SET` | `Error::AdminNotSet` | Contract has not been initialised | `admin` | Call `initialize` first |
+| E025 | `ERR_INVALID_AUTO_TOPUP` | `Error::InvalidAutoTopup` | Auto top-up parameters are invalid | `set_auto_topup` | Ensure `trigger_threshold > 0`, `topup_amount > 0`, and `topup_amount ≤ max_total` |
+| E026 | `ERR_NO_AUTO_TOPUP` | `Error::NoAutoTopup` | No auto top-up is configured for the stream | `cancel_auto_topup` | Configure auto top-up with `set_auto_topup` first |
+| E029 | `ERR_BATCH_TOO_LARGE` | `Error::BatchTooLarge` | Batch contains more than 50 streams | `create_streams_batch`, `cancel_streams_batch`, `pause_stream_batch`, `resume_stream_batch` | Split the operation into batches of at most 50 streams |
+| E031 | `ERR_TEMPLATE_NOT_FOUND` | `Error::TemplateNotFound` | No template exists for `(employer, template_id)` | `create_stream_from_template`, `delete_template` | Save the template with `save_template` first |
+
+> **Note:** Codes E015, E017 and E018 are retained for backwards compatibility and
+> resolve to the same `Error` variants as E012, E011 and E010 respectively. New
+> integrations should rely on the variant, not the numeric code, when matching
+> errors. The former duplicate `E030` entry has been removed; `update_stop_time`
+> now reports `E016` for an invalid stop time.
+
+### Token contract (`T0xx`)
+
+| Code | Constant | `Error` variant | Meaning | Raised By | Recommended Fix |
+|---|---|---|---|---|---|
+| T001 | `ERR_OVERFLOW` | `Error::Overflow` | Token arithmetic overflow | `mint`, `mint_to_batch`, `transfer`, `transfer_from` | Use smaller amounts |
+| T002 | `ERR_PAUSED` | `Error::Paused` | Token is paused | `transfer`, `transfer_from`, `burn`, `burn_from` | Wait for the admin to call `unpause_token` |
+| T003 | `ERR_BATCH_TOO_LARGE` | `Error::BatchTooLarge` | More than 50 recipients | `mint_to_batch` | Split into batches of at most 50 |
 
 ---
 

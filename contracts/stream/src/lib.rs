@@ -44,7 +44,7 @@ use storage::{
     set_stream_cliff, stream_ids_by_employee, stream_ids_by_employer, TIMELOCK_DELAY,
 };
 use types::{
-    AutoTopupConfig, PendingUpgrade, SplitBeneficiary,
+    AutoTopupConfig, Error, PendingUpgrade, SplitBeneficiary,
     ERR_ARCHIVE_TOO_EARLY, ERR_BELOW_MIN_DEPOSIT, ERR_INVALID_AUTO_TOPUP, ERR_INVALID_RATE, ERR_NO_AUTO_TOPUP, ERR_NO_PENDING_UPGRADE, ERR_STOP_TIME_PAST, ERR_STREAM_NOT_ENDED, ERR_UPGRADE_TIMELOCK_ACTIVE, ERR_ZERO_RATE,
     DataKey, LinearVestSchedule, Stream, StreamParams, StreamStatus, StreamType,
     ERR_ADMIN_NOT_SET, ERR_BAD_PENDING_NONCE,
@@ -84,12 +84,11 @@ fn stream_claimable_amount(env: &Env, stream: &Stream, now: u64) -> i128 {
     }
 }
 
-fn assert_payroll_stream(env: &Env, stream_id: u64) {
-    assert_eq!(
-        get_stream_type(env, stream_id),
-        StreamType::Payroll,
-        "operation not supported for linear vest streams"
-    );
+fn assert_payroll_stream(env: &Env, stream_id: u64) -> Result<(), Error> {
+    if get_stream_type(env, stream_id) != StreamType::Payroll {
+        return Err(Error::NotPayrollStream);
+    }
+    Ok(())
 }
 
 /// Applies a pre-authorized auto top-up after a withdraw when the stream's
@@ -155,16 +154,16 @@ impl StreamContract {
     /// - `admin` — address that becomes the contract admin (requires auth)
     ///
     /// # Errors
-    /// - Panics if `admin` auth fails
-    /// - Panics with "already initialized" if the contract has already been initialised
-    pub fn initialize(env: Env, admin: Address) {
-        assert!(
-            !env.storage().instance().has(&DataKey::Admin),
-            "already initialized"
-        );
+    /// - Panics if `admin` auth fails (SDK-enforced; cannot be returned as `Error`)
+    /// - [`Error::AlreadyInitialized`] if the contract has already been initialised
+    pub fn initialize(env: Env, admin: Address) -> Result<(), Error> {
+        if env.storage().instance().has(&DataKey::Admin) {
+            return Err(Error::AlreadyInitialized);
+        }
         admin.require_auth();
         set_admin(&env, &admin);
         events::contract_initialized(&env, &admin);
+        Ok(())
     }
 
     /// Step 1 of two-step admin transfer: current admin proposes a new admin.
@@ -180,14 +179,15 @@ impl StreamContract {
     ///   and also stored so `accept_admin` can verify it
     ///
     /// # Errors
-    /// - Panics if the current admin auth fails
-    /// - E009 if `nonce` does not match the stored admin nonce
-    pub fn propose_admin(env: Env, new_admin: Address, nonce: u64) {
+    /// - Panics if the current admin auth fails (SDK-enforced)
+    /// - [`Error::BadNonce`] (E009) if `nonce` does not match the stored admin nonce
+    pub fn propose_admin(env: Env, new_admin: Address, nonce: u64) -> Result<(), Error> {
         let current = get_admin(&env);
         current.require_auth();
         consume_admin_nonce(&env, nonce);
         set_pending_admin(&env, &new_admin);
         set_pending_admin_nonce(&env, nonce);
+        Ok(())
     }
 
     /// Step 2 of two-step admin transfer: proposed admin accepts and becomes admin.
@@ -197,17 +197,23 @@ impl StreamContract {
     /// - `nonce` — must match the nonce stored by [`propose_admin`]
     ///
     /// # Errors
-    /// - E010 if there is no pending admin
-    /// - E011 if `new_admin` does not match the pending admin
-    /// - E024 if `nonce` does not match the nonce stored by propose_admin
-    pub fn accept_admin(env: Env, new_admin: Address, nonce: u64) {
+    /// - Panics if `new_admin` auth fails (SDK-enforced)
+    /// - [`Error::NoPendingAdmin`] (E010) if there is no pending admin
+    /// - [`Error::NotPendingAdmin`] (E011) if `new_admin` does not match the pending admin
+    /// - [`Error::BadPendingNonce`] (E024) if `nonce` does not match the nonce stored by propose_admin
+    pub fn accept_admin(env: Env, new_admin: Address, nonce: u64) -> Result<(), Error> {
         new_admin.require_auth();
-        let pending = get_pending_admin(&env).expect(ERR_NO_PENDING_ADMIN);
-        assert_eq!(pending, new_admin, "{}", ERR_NOT_PENDING_ADMIN);
-        let stored_nonce = get_pending_admin_nonce(&env).expect(ERR_NO_PENDING_ADMIN);
-        assert!(nonce == stored_nonce, "{}", ERR_BAD_PENDING_NONCE);
+        let pending = get_pending_admin(&env).ok_or(Error::NoPendingAdmin)?;
+        if pending != new_admin {
+            return Err(Error::NotPendingAdmin);
+        }
+        let stored_nonce = get_pending_admin_nonce(&env).ok_or(Error::NoPendingAdmin)?;
+        if nonce != stored_nonce {
+            return Err(Error::BadPendingNonce);
+        }
         set_admin(&env, &new_admin);
         clear_pending_admin(&env);
+        Ok(())
     }
 
     /// Admin pauses the entire contract — blocks new streams and withdrawals.
@@ -219,14 +225,15 @@ impl StreamContract {
     /// - `nonce` — current admin nonce; must match the stored value (replay protection)
     ///
     /// # Errors
-    /// - Panics if admin auth fails
-    /// - E009 if `nonce` does not match the stored nonce
-    pub fn pause_contract(env: Env, nonce: u64) {
+    /// - Panics if admin auth fails (SDK-enforced)
+    /// - [`Error::BadNonce`] (E009) if `nonce` does not match the stored nonce
+    pub fn pause_contract(env: Env, nonce: u64) -> Result<(), Error> {
         let admin = get_admin(&env);
         admin.require_auth();
         consume_admin_nonce(&env, nonce);
         set_paused(&env, true);
         events::contract_paused(&env, true);
+        Ok(())
     }
 
     /// Admin unpauses the contract, restoring normal operation.
@@ -235,14 +242,15 @@ impl StreamContract {
     /// - `nonce` — current admin nonce; must match the stored value (replay protection)
     ///
     /// # Errors
-    /// - Panics if admin auth fails
-    /// - E009 if `nonce` does not match the stored nonce
-    pub fn unpause_contract(env: Env, nonce: u64) {
+    /// - Panics if admin auth fails (SDK-enforced)
+    /// - [`Error::BadNonce`] (E009) if `nonce` does not match the stored nonce
+    pub fn unpause_contract(env: Env, nonce: u64) -> Result<(), Error> {
         let admin = get_admin(&env);
         admin.require_auth();
         consume_admin_nonce(&env, nonce);
         set_paused(&env, false);
         events::contract_paused(&env, false);
+        Ok(())
     }
 
     /// Set the minimum deposit enforced on `create_stream`.
@@ -256,16 +264,22 @@ impl StreamContract {
     /// - `amount` — new minimum deposit (must be > 0)
     ///
     /// # Errors
-    /// - Panics if `admin` auth fails or does not match stored admin
-    /// - E009 if `nonce` is wrong
-    /// - E002 if `amount` ≤ 0
-    pub fn set_min_deposit(env: Env, admin: Address, nonce: u64, amount: i128) {
+    /// - Panics if `admin` auth fails (SDK-enforced)
+    /// - [`Error::NotAdmin`] if `admin` does not match the stored admin
+    /// - [`Error::BadNonce`] (E009) if `nonce` is wrong
+    /// - [`Error::ZeroDeposit`] (E002) if `amount` ≤ 0
+    pub fn set_min_deposit(env: Env, admin: Address, nonce: u64, amount: i128) -> Result<(), Error> {
         admin.require_auth();
         let stored_admin = get_admin(&env);
-        assert_eq!(admin, stored_admin, "{}", ERR_NOT_ADMIN);
+        if admin != stored_admin {
+            return Err(Error::NotAdmin);
+        }
         consume_admin_nonce(&env, nonce);
-        assert!(amount > 0, "{}", ERR_ZERO_DEPOSIT);
+        if amount <= 0 {
+            return Err(Error::ZeroDeposit);
+        }
         set_min_deposit(&env, amount);
+        Ok(())
     }
 
     /// Set the maximum number of streams an employer may create per ledger.
@@ -279,17 +293,23 @@ impl StreamContract {
     /// - `max` — new per-ledger limit (must be ≥ 1)
     ///
     /// # Errors
-    /// - Panics if `admin` auth fails or does not match stored admin
-    /// - E009 if `nonce` is wrong
-    /// - Panics if `max` is 0
-    pub fn set_max_creates_per_ledger(env: Env, admin: Address, nonce: u64, max: u32) {
+    /// - Panics if `admin` auth fails (SDK-enforced)
+    /// - [`Error::NotAdmin`] if `admin` does not match the stored admin
+    /// - [`Error::BadNonce`] (E009) if `nonce` is wrong
+    /// - [`Error::InvalidMaxCreates`] if `max` is 0
+    pub fn set_max_creates_per_ledger(env: Env, admin: Address, nonce: u64, max: u32) -> Result<(), Error> {
         admin.require_auth();
         let stored_admin = get_admin(&env);
-        assert_eq!(admin, stored_admin, "{}", ERR_NOT_ADMIN);
+        if admin != stored_admin {
+            return Err(Error::NotAdmin);
+        }
         consume_admin_nonce(&env, nonce);
-        assert!(max >= 1, "max must be at least 1");
+        if max < 1 {
+            return Err(Error::InvalidMaxCreates);
+        }
         store_max_creates(&env, max);
         events::max_creates_per_ledger_updated(&env, max);
+        Ok(())
     }
 
     /// Set the protocol creation fee and its treasury destination.
@@ -304,16 +324,22 @@ impl StreamContract {
     /// - `treasury` — address receiving collected fees
     ///
     /// # Errors
-    /// - Panics if admin auth fails or does not match the stored admin
-    /// - E009 if `nonce` is wrong
-    /// - Panics if `fee_bps` exceeds 100
-    pub fn set_protocol_fee(env: Env, admin: Address, nonce: u64, fee_bps: u32, treasury: Address) {
+    /// - Panics if admin auth fails (SDK-enforced)
+    /// - [`Error::NotAdmin`] if `admin` does not match the stored admin
+    /// - [`Error::BadNonce`] (E009) if `nonce` is wrong
+    /// - [`Error::FeeTooHigh`] if `fee_bps` exceeds 100
+    pub fn set_protocol_fee(env: Env, admin: Address, nonce: u64, fee_bps: u32, treasury: Address) -> Result<(), Error> {
         admin.require_auth();
         let stored_admin = get_admin(&env);
-        assert_eq!(admin, stored_admin, "{}", ERR_NOT_ADMIN);
-        assert!(fee_bps <= 100, "protocol fee cannot exceed 100 basis points");
+        if admin != stored_admin {
+            return Err(Error::NotAdmin);
+        }
+        if fee_bps > 100 {
+            return Err(Error::FeeTooHigh);
+        }
         consume_admin_nonce(&env, nonce);
         set_protocol_fee(&env, fee_bps, &treasury);
+        Ok(())
     }
 
     /// Employer creates a salary stream and deposits funds into the contract escrow.
@@ -338,15 +364,17 @@ impl StreamContract {
     /// The new stream ID as `u64`.
     ///
     /// # Errors
-    /// - Panics if contract is paused
-    /// - E002 if `deposit` ≤ 0
-    /// - E007 if `deposit` < minimum deposit
-    /// - E001 if `rate_per_second` ≤ 0
-    /// - E008 if `rate_per_second` > 1,000,000,000
-    /// - Panics if `stop_time` is non-zero and in the past
-    /// - Panics if `employer` == `employee`
-    /// - E035 if `cliff_time` > `stop_time` (when `stop_time` is set)
-    /// - Panics if the token transfer fails
+    /// - Panics if `employer` auth fails (SDK-enforced)
+    /// - [`Error::ContractPaused`] if contract is paused
+    /// - [`Error::ZeroDeposit`] (E002) if `deposit` ≤ 0
+    /// - [`Error::BelowMinDeposit`] (E007) if `deposit` < minimum deposit
+    /// - [`Error::ZeroRate`] (E001) if `rate_per_second` ≤ 0
+    /// - [`Error::InvalidRate`] (E008) if `rate_per_second` > 1,000,000,000
+    /// - [`Error::StopTimePast`] if `stop_time` is non-zero and in the past
+    /// - [`Error::SameEmployerEmployee`] if `employer` == `employee`
+    /// - [`Error::CliffExceedsStopTime`] (E035) if `cliff_time` > `stop_time` (when `stop_time` is set)
+    /// - [`Error::TreasuryNotConfigured`] if a fee applies but no treasury is set
+    /// - Panics if the token transfer fails (SEP-41 token contract panics propagate)
     pub fn create_stream(
         env: Env,
         employer: Address,
@@ -357,9 +385,11 @@ impl StreamContract {
         stop_time: u64,
         low_balance_threshold: Option<i128>,
         cliff_time: Option<u64>,
-    ) -> u64 {
+    ) -> Result<u64, Error> {
         employer.require_auth();
-        assert!(!get_paused(&env), "{}", ERR_CONTRACT_PAUSED);
+        if get_paused(&env) {
+            return Err(Error::ContractPaused);
+        }
 
         // SEC-24: enforce per-employer, per-ledger stream creation rate limit.
         check_and_increment_create_rate(&env, &employer, 1);
@@ -374,8 +404,8 @@ impl StreamContract {
             now,
             &employer,
             &employee,
-        );
-        validate_cliff(cliff_time, stop_time);
+        )?;
+        validate_cliff(cliff_time, stop_time)?;
         // A cliff that has already passed is a no-op.
         let cliff = cliff_time.filter(|c| *c > now);
 
@@ -386,11 +416,8 @@ impl StreamContract {
         token_client.balance(&employer); // SEP-41 probe
         token_client.transfer(&employer, &env.current_contract_address(), &stream_deposit);
         if fee > 0 {
-            token_client.transfer(
-                &employer,
-                &treasury.expect("protocol fee treasury is not configured"),
-                &fee,
-            );
+            let treasury = treasury.ok_or(Error::TreasuryNotConfigured)?;
+            token_client.transfer(&employer, &treasury, &fee);
         }
 
         let id = next_id(&env);
@@ -423,13 +450,25 @@ impl StreamContract {
         index_token_stream(&env, &stream.token, id);
         index_stream_by_timestamp(&env, now, id);
         events::stream_created(&env, id, &employer, &employee, rate_per_second);
-        id
+        Ok(id)
     }
 
     /// Employer creates a grant that vests linearly over a fixed period.
     ///
     /// The optional cliff delays access to all accrued vesting until the cliff
     /// duration has elapsed; vesting itself accrues from `start_time`.
+    ///
+    /// # Errors
+    /// - Panics if `employer` auth fails (SDK-enforced)
+    /// - [`Error::ContractPaused`] if contract is paused
+    /// - [`Error::ZeroDeposit`] if `total_grant` ≤ 0
+    /// - [`Error::BelowMinDeposit`] if `total_grant` < minimum deposit
+    /// - [`Error::ZeroVestPeriod`] if `vest_period` is 0
+    /// - [`Error::CliffExceedsVestPeriod`] if `cliff` > `vest_period`
+    /// - [`Error::SameEmployerEmployee`] if `employer` == `employee`
+    /// - [`Error::Overflow`] if `now + vest_period` overflows
+    /// - [`Error::TreasuryNotConfigured`] if a fee applies but no treasury is set
+    /// - Panics if the token transfer fails (SEP-41 token contract panics propagate)
     pub fn create_linear_vest(
         env: Env,
         employer: Address,
@@ -438,24 +477,29 @@ impl StreamContract {
         total_grant: i128,
         vest_period: u64,
         cliff: Option<u64>,
-    ) -> u64 {
+    ) -> Result<u64, Error> {
         employer.require_auth();
-        assert!(!get_paused(&env), "{}", ERR_CONTRACT_PAUSED);
+        if get_paused(&env) {
+            return Err(Error::ContractPaused);
+        }
 
         let now = env.ledger().timestamp();
-        assert!(total_grant > 0, "{}", ERR_ZERO_DEPOSIT);
-        assert!(
-            total_grant >= get_min_deposit(&env),
-            "{}",
-            ERR_BELOW_MIN_DEPOSIT
-        );
-        assert!(vest_period > 0, "vest period must be greater than zero");
-        assert!(
-            cliff.is_none_or(|cliff_duration| cliff_duration <= vest_period),
-            "cliff cannot exceed vest period"
-        );
-        assert!(employer != employee, "employer and employee must differ");
-        let stop_time = now.checked_add(vest_period).expect(ERR_OVERFLOW);
+        if total_grant <= 0 {
+            return Err(Error::ZeroDeposit);
+        }
+        if total_grant < get_min_deposit(&env) {
+            return Err(Error::BelowMinDeposit);
+        }
+        if vest_period == 0 {
+            return Err(Error::ZeroVestPeriod);
+        }
+        if !cliff.is_none_or(|cliff_duration| cliff_duration <= vest_period) {
+            return Err(Error::CliffExceedsVestPeriod);
+        }
+        if employer == employee {
+            return Err(Error::SameEmployerEmployee);
+        }
+        let stop_time = now.checked_add(vest_period).ok_or(Error::Overflow)?;
 
         let (fee_bps, treasury) = get_protocol_fee(&env);
         let fee = protocol_fee_amount(total_grant, fee_bps);
@@ -464,11 +508,8 @@ impl StreamContract {
         token_client.balance(&employer); // SEP-41 probe
         token_client.transfer(&employer, &env.current_contract_address(), &net_grant);
         if fee > 0 {
-            token_client.transfer(
-                &employer,
-                &treasury.expect("protocol fee treasury is not configured"),
-                &fee,
-            );
+            let treasury = treasury.ok_or(Error::TreasuryNotConfigured)?;
+            token_client.transfer(&employer, &treasury, &fee);
         }
 
         let id = next_id(&env);
@@ -504,7 +545,7 @@ impl StreamContract {
         index_token_stream(&env, &token_address, id);
         index_stream_by_timestamp(&env, now, id);
         events::stream_created(&env, id, &employer, &employee, 0);
-        id
+        Ok(id)
     }
 
     /// Employer creates multiple salary streams atomically in a single transaction.
@@ -521,22 +562,29 @@ impl StreamContract {
     /// `Vec<u64>` of new stream IDs in the same order as `params`.
     ///
     /// # Errors
-    /// - Panics if contract is paused
-    /// - Panics if `params` is empty
-    /// - Panics with E029 if `params` contains more than 50 entries
-    /// - Same per-stream validations as [`create_stream`]; panic message includes
-    ///   the zero-based stream index, e.g. `"stream[3]: E001: rate_per_second must
-    ///   be greater than zero"`, so callers can identify the failing entry without
-    ///   retrying each stream individually.
+    /// - Panics if `employer` auth fails (SDK-enforced)
+    /// - [`Error::ContractPaused`] if contract is paused
+    /// - [`Error::EmptyParams`] if `params` is empty
+    /// - [`Error::BatchTooLarge`] (E029) if `params` contains more than 50 entries
+    /// - Same per-stream validations as [`create_stream`], returned as the
+    ///   corresponding [`Error`] variant. The failing entry's zero-based index
+    ///   is not encoded in the error; callers should validate entries individually
+    ///   to identify the offending stream.
     pub fn create_streams_batch(
         env: Env,
         employer: Address,
         params: Vec<StreamParams>,
-    ) -> Vec<u64> {
+    ) -> Result<Vec<u64>, Error> {
         employer.require_auth();
-        assert!(!get_paused(&env), "{}", ERR_CONTRACT_PAUSED);
-        assert!(!params.is_empty(), "{}", ERR_EMPTY_PARAMS);
-        assert!(params.len() <= MAX_BATCH_SIZE, "{}", ERR_BATCH_TOO_LARGE);
+        if get_paused(&env) {
+            return Err(Error::ContractPaused);
+        }
+        if params.is_empty() {
+            return Err(Error::EmptyParams);
+        }
+        if params.len() > MAX_BATCH_SIZE {
+            return Err(Error::BatchTooLarge);
+        }
 
         // SEC-24: count the entire batch against the per-ledger rate limit so a
         // single batch call cannot bypass the cap.
@@ -553,55 +601,41 @@ impl StreamContract {
         let mut totals: Map<Address, i128> = Map::new(&env);
         let mut fee_totals: Map<Address, i128> = Map::new(&env);
         for p in params.iter() {
-            // Validate each parameter independently and prefix any panic with the
-            // stream index so callers can identify which entry failed.
-            assert!(p.deposit > 0, "stream[{}]: {}", index, ERR_ZERO_DEPOSIT);
-            assert!(
-                p.deposit >= min_deposit,
-                "stream[{}]: {}",
-                index,
-                ERR_BELOW_MIN_DEPOSIT
-            );
-            assert!(
-                p.rate_per_second > 0,
-                "stream[{}]: {}",
-                index,
-                ERR_ZERO_RATE
-            );
-            assert!(
-                p.rate_per_second <= validate::MAX_RATE_PER_SECOND,
-                "stream[{}]: {}",
-                index,
-                ERR_INVALID_RATE
-            );
-            if p.stop_time > 0 {
-                assert!(
-                    p.stop_time > now,
-                    "stream[{}]: {}",
-                    index,
-                    ERR_STOP_TIME_PAST
-                );
+            // Validate each parameter independently; the first failing entry
+            // determines the returned error variant.
+            if p.deposit <= 0 {
+                return Err(Error::ZeroDeposit);
             }
-            validate_cliff(p.cliff_time, p.stop_time);
-            assert!(
-                employer != p.employee,
-                "stream[{}]: employer and employee must differ",
-                index
-            );
+            if p.deposit < min_deposit {
+                return Err(Error::BelowMinDeposit);
+            }
+            if p.rate_per_second <= 0 {
+                return Err(Error::ZeroRate);
+            }
+            if p.rate_per_second > validate::MAX_RATE_PER_SECOND {
+                return Err(Error::InvalidRate);
+            }
+            if p.stop_time > 0 && p.stop_time <= now {
+                return Err(Error::StopTimePast);
+            }
+            validate_cliff(p.cliff_time, p.stop_time)?;
+            if employer == p.employee {
+                return Err(Error::SameEmployerEmployee);
+            }
             let fee = protocol_fee_amount(p.deposit, fee_bps);
             let net_deposit = p.deposit - fee;
             let total = totals
                 .get(p.token.clone())
                 .unwrap_or(0)
                 .checked_add(net_deposit)
-                .expect(ERR_OVERFLOW);
+                .ok_or(Error::Overflow)?;
             totals.set(p.token.clone(), total);
             if fee > 0 {
                 let fee_total = fee_totals
                     .get(p.token.clone())
                     .unwrap_or(0)
                     .checked_add(fee)
-                    .expect(ERR_OVERFLOW);
+                    .ok_or(Error::Overflow)?;
                 fee_totals.set(p.token.clone(), fee_total);
             }
         }
@@ -612,7 +646,7 @@ impl StreamContract {
             token_client.transfer(&employer, &env.current_contract_address(), &total);
         }
         if fee_bps > 0 {
-            let treasury = treasury.expect("protocol fee treasury is not configured");
+            let treasury = treasury.ok_or(Error::TreasuryNotConfigured)?;
             for (token_address, total_fee) in fee_totals.iter() {
                 let token_client = token::Client::new(&env, &token_address);
                 token_client.transfer(&employer, &treasury, &total_fee);
@@ -652,7 +686,7 @@ impl StreamContract {
             index += 1;
         }
 
-        ids
+        Ok(ids)
     }
 
     /// Create a multi-beneficiary stream that splits earnings across multiple recipients (PROD-22).

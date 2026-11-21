@@ -9,6 +9,12 @@ PayStream uses Soroban's native WASM upgrade mechanism. The contract address nev
 3. **Call `upgrade`** on the deployed contract with the new WASM hash (admin only)
 4. **Call `migrate`** if the new version requires data-model changes (admin only, no-op in base version)
 
+> **Admin runbook:** for the concrete, copy-paste timelock flow
+> (propose → wait → execute → migrate → verify), see
+> [`docs/upgrade-runbook.md`](upgrade-runbook.md). That runbook is the
+> authoritative procedure for production upgrades; the steps below are a
+> condensed overview.
+
 ## Step-by-step
 
 ### 1. Build the new contract
@@ -48,6 +54,33 @@ stellar contract invoke \
   -- migrate \
   --admin <ADMIN_ADDRESS>
 ```
+
+### 5. Verify the deployment
+
+```bash
+stellar contract invoke \
+  --id <STREAM_CONTRACT_ID> \
+  --source-account <ADMIN_IDENTITY> \
+  --network testnet \
+  -- get_admin
+# confirm the returned admin matches <ADMIN_ADDRESS>
+
+stellar contract invoke \
+  --id <STREAM_CONTRACT_ID> \
+  --source-account <ADMIN_IDENTITY> \
+  --network testnet \
+  -- get_version
+# confirm the reported version matches the newly deployed build
+```
+
+See the verify-deploy step in [`docs/upgrade-runbook.md`](upgrade-runbook.md)
+for the full post-upgrade verification checklist.
+
+### Rollback
+
+If an upgrade must be reverted, follow the rollback procedure in
+[`docs/upgrade-runbook.md`](upgrade-runbook.md) (OPS-51). Do not attempt a
+manual rollback outside that procedure.
 
 ## Storage compatibility
 
@@ -95,11 +128,20 @@ stellar contract invoke --id <TOKEN_CONTRACT_ID> --source admin --network testne
 # Confirm the new WASM is operational (no-op hook, admin only)
 stellar contract invoke --id <TOKEN_CONTRACT_ID> --source admin --network testnet \
   -- migrate --admin <ADMIN_ADDRESS>
+
+# Verify the deployment: nonce advanced and admin unchanged
+stellar contract invoke --id <TOKEN_CONTRACT_ID> --source admin --network testnet -- admin_nonce
+stellar contract invoke --id <TOKEN_CONTRACT_ID> --source admin --network testnet -- get_admin
 ```
 
 - `upgrade` requires the stored admin's auth and consumes the admin nonce shared with `mint`.
+  Always read the nonce immediately before proposing/executing the upgrade and pass that
+  exact value — a stale nonce causes the upgrade to fail.
 - Never reorder or remove `TokenDataKey` variants; only append new ones.
 - Verify with `cargo test -p paystream-token --features wasm-tests` (requires the release WASM build).
+- The propose → wait → execute → migrate → verify flow and the verify-deploy checklist
+  are the same as for the stream contract; see
+  [`docs/upgrade-runbook.md`](upgrade-runbook.md). Rollback is covered there too (OPS-51).
 
 ## Soroban SDK Upgrades
 

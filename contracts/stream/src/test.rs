@@ -9,7 +9,7 @@ use soroban_sdk::{Address, Env};
 
 use crate::storage;
 use crate::types::{AutoTopupConfig, StreamParams, StreamStatus};
-use crate::{StreamContract, StreamContractClient};
+use crate::{Error, StreamContract, StreamContractClient};
 
 /// Rebuild the pre-SDK-23 `(contract, topics, data)` view of emitted events.
 ///
@@ -239,14 +239,18 @@ fn test_protocol_fee_defaults_to_zero() {
 }
 
 #[test]
-#[should_panic(expected = "protocol fee cannot exceed 100 basis points")]
 fn test_protocol_fee_above_one_percent_is_rejected() {
     let (env, client) = setup();
     let admin = Address::generate(&env);
     let treasury = Address::generate(&env);
 
     client.initialize(&admin);
-    client.set_protocol_fee(&admin, &0, &101, &treasury);
+    let res = client.try_set_protocol_fee(&admin, &0, &101, &treasury);
+    assert_eq!(
+        res,
+        Err(Ok(Error::InvalidProtocolFee)),
+        "protocol fee above 100 bps must return Error::InvalidProtocolFee"
+    );
 }
 
 #[test]
@@ -1821,7 +1825,6 @@ fn test_is_paused_reflects_pause_unpause() {
 // ---------------------------------------------------------------------------
 
 #[test]
-#[should_panic(expected = "E004")]
 fn test_top_up_deposit_overflow_uses_err_overflow() {
     use crate::storage::save_stream;
     use paystream_token::TokenContractClient;
@@ -1846,8 +1849,13 @@ fn test_top_up_deposit_overflow_uses_err_overflow() {
     let token = TokenContractClient::new(&env, &token_id);
     token.approve(&employer, &client.address, &1_i128, &9999);
 
-    // top_up with 1 should panic with E004, not a generic "deposit overflow" message.
-    client.top_up(&employer, &id, &1, &None);
+    // top_up with 1 must return Error::Overflow, not a generic message.
+    let res = client.try_top_up(&employer, &id, &1, &None);
+    assert_eq!(
+        res,
+        Err(Ok(Error::Overflow)),
+        "top_up overflow must return Error::Overflow"
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -2295,14 +2303,14 @@ fn test_stream_status_exhausted() {
     assert_eq!(client.stream_status(&id), StreamStatus::Exhausted);
 }
 
-/// stream_status panics with "stream not found" for a non-existent stream.
+/// stream_status returns Error::StreamNotFound for a non-existent stream.
 #[test]
-#[should_panic(expected = "stream not found")]
-fn test_stream_status_not_found_panics() {
+fn test_stream_status_not_found_returns_error() {
     let (env, client) = setup();
     let admin = Address::generate(&env);
     client.initialize(&admin);
-    client.stream_status(&999);
+    let res = client.try_stream_status(&999);
+    assert_eq!(res, Err(Ok(Error::StreamNotFound)));
 }
 
 // ---------------------------------------------------------------------------
@@ -2325,8 +2333,7 @@ fn test_create_streams_batch_max_size_succeeds() {
 }
 
 #[test]
-#[should_panic(expected = "E029")]
-fn test_create_streams_batch_over_max_panics() {
+fn test_create_streams_batch_over_max_returns_error() {
     let (env, client) = setup();
     let admin = Address::generate(&env);
     let employer = Address::generate(&env);
@@ -2336,7 +2343,8 @@ fn test_create_streams_batch_over_max_panics() {
     client.set_min_deposit(&admin, &0, &100);
     let params = make_stream_params(&env, &token_id, 51);
 
-    client.create_streams_batch(&employer, &params);
+    let res = client.try_create_streams_batch(&employer, &params);
+    assert_eq!(res, Err(Ok(Error::BatchTooLarge)));
 }
 
 #[test]
@@ -2363,8 +2371,7 @@ fn test_cancel_streams_batch_max_size_succeeds() {
 }
 
 #[test]
-#[should_panic(expected = "E029")]
-fn test_cancel_streams_batch_over_max_panics() {
+fn test_cancel_streams_batch_over_max_returns_error() {
     let (env, client) = setup();
     let admin = Address::generate(&env);
     let employer = Address::generate(&env);
@@ -2377,7 +2384,8 @@ fn test_cancel_streams_batch_over_max_panics() {
     let employee = Address::generate(&env);
     ids.push_back(client.create_stream(&employer, &employee, &token_id, &100, &1, &0, &None, &None));
 
-    client.cancel_streams_batch(&employer, &ids);
+    let res = client.try_cancel_streams_batch(&employer, &ids);
+    assert_eq!(res, Err(Ok(Error::BatchTooLarge)));
 }
 
 #[test]
@@ -2441,8 +2449,7 @@ fn test_pause_stream_batch_failure_reverts_prior_changes() {
 }
 
 #[test]
-#[should_panic(expected = "E029")]
-fn test_pause_stream_batch_over_max_panics() {
+fn test_pause_stream_batch_over_max_returns_error() {
     let (env, client) = setup();
     let admin = Address::generate(&env);
     let employer = Address::generate(&env);
@@ -2456,7 +2463,8 @@ fn test_pause_stream_batch_over_max_panics() {
         ids.push_back(id);
     }
 
-    client.pause_stream_batch(&employer, &ids);
+    let res = client.try_pause_stream_batch(&employer, &ids);
+    assert_eq!(res, Err(Ok(Error::BatchTooLarge)));
 }
 
 #[test]
@@ -2528,8 +2536,7 @@ fn test_resume_stream_batch_failure_reverts_prior_changes() {
 }
 
 #[test]
-#[should_panic(expected = "E029")]
-fn test_resume_stream_batch_over_max_panics() {
+fn test_resume_stream_batch_over_max_returns_error() {
     let (env, client) = setup();
     let admin = Address::generate(&env);
     let employer = Address::generate(&env);
@@ -2544,7 +2551,8 @@ fn test_resume_stream_batch_over_max_panics() {
         ids.push_back(id);
     }
 
-    client.resume_stream_batch(&employer, &ids);
+    let res = client.try_resume_stream_batch(&employer, &ids);
+    assert_eq!(res, Err(Ok(Error::BatchTooLarge)));
 }
 
 /// Happy path: batch cancel two active streams atomically.
@@ -2599,7 +2607,6 @@ fn test_cancel_streams_batch_includes_paused_stream() {
 
 /// Empty stream_ids list must be rejected.
 #[test]
-#[should_panic(expected = "stream_ids must not be empty")]
 fn test_cancel_streams_batch_empty_list_rejected() {
     let (env, client) = setup();
     let admin = Address::generate(&env);
@@ -2607,7 +2614,8 @@ fn test_cancel_streams_batch_empty_list_rejected() {
     client.initialize(&admin);
 
     let ids: soroban_sdk::Vec<u64> = soroban_sdk::Vec::new(&env);
-    client.cancel_streams_batch(&employer, &ids);
+    let res = client.try_cancel_streams_batch(&employer, &ids);
+    assert_eq!(res, Err(Ok(Error::EmptyBatch)));
 }
 
 /// If any stream in the batch is already cancelled, the whole batch reverts.
@@ -4822,9 +4830,8 @@ fn test_transfer_stream_paused_succeeds() {
     assert_eq!(s.status, StreamStatus::Paused);
 }
 
-/// Wrong caller (not the employer) must be rejected with ERR_NOT_EMPLOYER.
+/// Wrong caller (not the employer) must be rejected with Error::NotEmployer.
 #[test]
-#[should_panic(expected = "E018")]
 fn test_transfer_stream_wrong_caller_rejected() {
     let (env, client) = setup();
     let admin = Address::generate(&env);
@@ -4837,12 +4844,12 @@ fn test_transfer_stream_wrong_caller_rejected() {
     client.initialize(&admin);
     let id = client.create_stream(&employer, &employee, &token_id, &10_000, &10, &0, &None, &None);
 
-    client.transfer_stream(&attacker, &id, &new_employer);
+    let res = client.try_transfer_stream(&attacker, &id, &new_employer);
+    assert_eq!(res, Err(Ok(Error::NotEmployer)));
 }
 
-/// Transfer of a Cancelled stream must be rejected with ERR_STREAM_ALREADY_ENDED.
+/// Transfer of a Cancelled stream must be rejected with Error::StreamAlreadyEnded.
 #[test]
-#[should_panic(expected = "E020")]
 fn test_transfer_stream_cancelled_rejected() {
     let (env, client) = setup();
     let admin = Address::generate(&env);
@@ -4855,12 +4862,12 @@ fn test_transfer_stream_cancelled_rejected() {
     let id = client.create_stream(&employer, &employee, &token_id, &10_000, &10, &0, &None, &None);
     client.cancel_stream(&employer, &id);
 
-    client.transfer_stream(&employer, &id, &new_employer);
+    let res = client.try_transfer_stream(&employer, &id, &new_employer);
+    assert_eq!(res, Err(Ok(Error::StreamAlreadyEnded)));
 }
 
-/// Transfer of an Exhausted stream must be rejected with ERR_STREAM_ALREADY_ENDED.
+/// Transfer of an Exhausted stream must be rejected with Error::StreamAlreadyEnded.
 #[test]
-#[should_panic(expected = "E020")]
 fn test_transfer_stream_exhausted_rejected() {
     let (env, client) = setup();
     let admin = Address::generate(&env);
@@ -4876,12 +4883,12 @@ fn test_transfer_stream_exhausted_rejected() {
     env.ledger().with_mut(|l| l.timestamp += 100);
     client.withdraw(&employee, &id); // exhausts the stream
 
-    client.transfer_stream(&employer, &id, &new_employer);
+    let res = client.try_transfer_stream(&employer, &id, &new_employer);
+    assert_eq!(res, Err(Ok(Error::StreamAlreadyEnded)));
 }
 
-/// new_employer must not equal the stream's employee (E028).
+/// new_employer must not equal the stream's employee (Error::InvalidTransferTarget).
 #[test]
-#[should_panic(expected = "E028")]
 fn test_transfer_stream_new_employer_is_employee_rejected() {
     let (env, client) = setup();
     let admin = Address::generate(&env);
@@ -4892,7 +4899,8 @@ fn test_transfer_stream_new_employer_is_employee_rejected() {
     client.initialize(&admin);
     let id = client.create_stream(&employer, &employee, &token_id, &10_000, &10, &0, &None, &None);
 
-    client.transfer_stream(&employer, &id, &employee);
+    let res = client.try_transfer_stream(&employer, &id, &employee);
+    assert_eq!(res, Err(Ok(Error::InvalidTransferTarget)));
 }
 
 /// After transfer, the new employer can pause/resume/cancel the stream.
@@ -5038,7 +5046,6 @@ fn test_cliff_reached_event_emitted_once() {
 }
 
 #[test]
-#[should_panic(expected = "E035")]
 fn test_cliff_after_stop_time_rejected() {
     let (env, client) = setup();
     let admin = Address::generate(&env);
@@ -5047,7 +5054,17 @@ fn test_cliff_after_stop_time_rejected() {
     let token_id = setup_token(&env, &employer);
     client.initialize(&admin);
     env.ledger().with_mut(|l| l.timestamp = 1_000);
-    client.create_stream(&employer, &employee, &token_id, &10_000, &10, &1_500, &None, &Some(1_600));
+    let res = client.try_create_stream(
+        &employer,
+        &employee,
+        &token_id,
+        &10_000,
+        &10,
+        &1_500,
+        &None,
+        &Some(1_600),
+    );
+    assert_eq!(res, Err(Ok(Error::CliffAfterStopTime)));
 }
 
 #[test]
@@ -5157,7 +5174,6 @@ fn test_template_delete() {
 }
 
 #[test]
-#[should_panic(expected = "E031")]
 fn test_template_create_after_delete_fails() {
     let (env, client) = setup();
     let admin = Address::generate(&env);
@@ -5168,11 +5184,11 @@ fn test_template_create_after_delete_fails() {
 
     client.save_template(&employer, &1, &template_params(&env, &token_id, None));
     client.delete_template(&employer, &1);
-    client.create_stream_from_template(&employer, &employee, &1);
+    let res = client.try_create_stream_from_template(&employer, &employee, &1);
+    assert_eq!(res, Err(Ok(Error::TemplateNotFound)));
 }
 
 #[test]
-#[should_panic(expected = "E031")]
 fn test_template_other_employer_cannot_use() {
     let (env, client) = setup();
     let admin = Address::generate(&env);
@@ -5184,11 +5200,11 @@ fn test_template_other_employer_cannot_use() {
 
     client.save_template(&employer, &1, &template_params(&env, &token_id, None));
     // Templates are keyed by employer: `other` has no template 1.
-    client.create_stream_from_template(&other, &employee, &1);
+    let res = client.try_create_stream_from_template(&other, &employee, &1);
+    assert_eq!(res, Err(Ok(Error::TemplateNotFound)));
 }
 
 #[test]
-#[should_panic(expected = "E031")]
 fn test_template_other_employer_cannot_delete() {
     let (env, client) = setup();
     let admin = Address::generate(&env);
@@ -5198,7 +5214,8 @@ fn test_template_other_employer_cannot_delete() {
     client.initialize(&admin);
 
     client.save_template(&employer, &1, &template_params(&env, &token_id, None));
-    client.delete_template(&other, &1);
+    let res = client.try_delete_template(&other, &1);
+    assert_eq!(res, Err(Ok(Error::TemplateNotFound)));
 }
 
 #[test]
@@ -5211,4 +5228,93 @@ fn test_template_save_requires_employer_auth() {
     // No mock_all_auths: the employer has not signed.
     let res = client.try_save_template(&employer, &1, &template_params(&env, &token, None));
     assert!(res.is_err(), "save_template must require the employer's auth");
+}
+
+// ---------------------------------------------------------------------------
+// SC-92 – typed Error enum: uniqueness, ERR_* constant parity, and coverage
+// ---------------------------------------------------------------------------
+
+/// Every `Error` variant must map to a distinct numeric code.
+#[test]
+fn test_error_codes_are_unique() {
+    let codes = Error::all_codes();
+    let mut seen = soroban_sdk::Vec::new(&env_of_codes());
+    for code in codes.iter() {
+        assert!(
+            !seen.contains(code),
+            "duplicate Error code detected: {}",
+            code
+        );
+        seen.push_back(code);
+    }
+}
+
+/// The numeric code of each `Error` variant must match the documented
+/// `ERR_*` constant so SDK consumers can rely on stable wire values.
+#[test]
+fn test_error_codes_match_err_constants() {
+    use crate::errors::*;
+    let pairs: [(Error, u32); 0] = [];
+    let _ = pairs;
+    assert_eq!(Error::StreamNotFound.code(), ERR_STREAM_NOT_FOUND);
+    assert_eq!(Error::NotEmployer.code(), ERR_NOT_EMPLOYER);
+    assert_eq!(Error::StreamAlreadyEnded.code(), ERR_STREAM_ALREADY_ENDED);
+    assert_eq!(Error::Overflow.code(), ERR_OVERFLOW);
+    assert_eq!(Error::BatchTooLarge.code(), ERR_BATCH_TOO_LARGE);
+    assert_eq!(Error::EmptyBatch.code(), ERR_EMPTY_BATCH);
+    assert_eq!(Error::InvalidProtocolFee.code(), ERR_INVALID_PROTOCOL_FEE);
+    assert_eq!(Error::TemplateNotFound.code(), ERR_TEMPLATE_NOT_FOUND);
+    assert_eq!(Error::CliffAfterStopTime.code(), ERR_CLIFF_AFTER_STOP_TIME);
+    assert_eq!(Error::InvalidTransferTarget.code(), ERR_INVALID_TRANSFER_TARGET);
+}
+
+/// `Error` must implement `From<Error> for soroban_sdk::Error` so that
+/// `?` in contract code surfaces the typed variant to callers.
+#[test]
+fn test_error_converts_to_sdk_error() {
+    let sdk_err: soroban_sdk::Error = Error::StreamNotFound.into();
+    assert_eq!(sdk_err, soroban_sdk::Error::from_contract_error(Error::StreamNotFound.code()));
+}
+
+/// Creating a stream with a zero deposit must surface `Error::InvalidDeposit`.
+#[test]
+fn test_create_stream_zero_deposit_returns_error() {
+    let (env, client) = setup();
+    let admin = Address::generate(&env);
+    let employer = Address::generate(&env);
+    let employee = Address::generate(&env);
+    let token_id = setup_token(&env, &employer);
+
+    client.initialize(&admin);
+    let res = client.try_create_stream(&employer, &employee, &token_id, &0, &1, &0, &None, &None);
+    assert_eq!(res, Err(Ok(Error::InvalidDeposit)));
+}
+
+/// Withdrawing from a non-existent stream must surface `Error::StreamNotFound`.
+#[test]
+fn test_withdraw_unknown_stream_returns_error() {
+    let (env, client) = setup();
+    let admin = Address::generate(&env);
+    let employee = Address::generate(&env);
+    client.initialize(&admin);
+
+    let res = client.try_withdraw(&employee, &999);
+    assert_eq!(res, Err(Ok(Error::StreamNotFound)));
+}
+
+/// Pausing an already-cancelled stream must surface `Error::StreamAlreadyEnded`.
+#[test]
+fn test_pause_cancelled_stream_returns_error() {
+    let (env, client) = setup();
+    let admin = Address::generate(&env);
+    let employer = Address::generate(&env);
+    let employee = Address::generate(&env);
+    let token_id = setup_token(&env, &employer);
+
+    client.initialize(&admin);
+    let id = client.create_stream(&employer, &employee, &token_id, &10_000, &10, &0, &None, &None);
+    client.cancel_stream(&employer, &id);
+
+    let res = client.try_pause_stream(&employer, &id, &None);
+    assert_eq!(res, Err(Ok(Error::StreamAlreadyEnded)));
 }
