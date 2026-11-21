@@ -60,6 +60,10 @@ pub struct Stream {
     pub low_balance_threshold: i128,
     /// Optional reason for pausing the stream (regulatory compliance and dispute resolution).
     pub pause_reason: Option<soroban_sdk::String>,
+    /// Optional lifetime-withdrawable cap (SC-97). When set, the stream stops
+    /// accruing/withdrawing once `withdrawn` reaches this value. `None` means
+    /// no cap. Legacy persisted streams decode as `None`.
+    pub max_withdrawable: Option<i128>,
 }
 
 /// Vesting terms stored separately so existing persisted `Stream` values remain decodable.
@@ -92,6 +96,10 @@ pub struct StreamParams {
     /// starts from `cliff_time` once passed. Must be <= `stop_time` when both
     /// are set.
     pub cliff_time: Option<u64>,
+    /// Optional lifetime-withdrawable cap (SC-97). When set, the stream stops
+    /// accruing/withdrawing once `withdrawn` reaches this value. `None` means
+    /// no cap.
+    pub max_withdrawable: Option<i128>,
 }
 
 /// Single beneficiary in a split stream, with their share in basis points.
@@ -208,6 +216,10 @@ pub enum DataKey {
     LastCreateLedger(Address),
     /// Split stream beneficiaries: stream ID → Vec<SplitBeneficiary> for multi-recipient streams (PROD-22).
     SplitBeneficiaries(u64),
+    /// Lifetime-withdrawable cap for a stream (SC-97): stream ID → i128. Stored
+    /// apart from `Stream` so existing persisted streams stay decodable. Missing
+    /// keys mean no cap.
+    StreamMaxWithdrawable(u64),
 }
 
 /// Contract error codes – panic messages reference these names so callers can

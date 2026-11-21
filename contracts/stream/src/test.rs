@@ -1939,6 +1939,68 @@ fn test_withdraw_all_no_streams_returns_empty() {
     assert_eq!(results.len(), 0);
 }
 
+/// SC-58: withdraw_all caps the number of streams processed per call at
+/// `MAX_WITHDRAW_ALL_BATCH` (50). With more than 50 claimable streams, a
+/// single call must process exactly 50, report the remaining count, and
+/// leave the untouched streams' state intact (no partial state).
+#[test]
+fn test_withdraw_all_caps_at_batch_limit_and_reports_remaining() {
+    let (env, client) = setup();
+    let admin = Address::generate(&env);
+    let employer = Address::generate(&env);
+    let employee = Address::generate(&env);
+    let token_id = setup_token(&env, &employer);
+
+    client.initialize(&admin);
+    client.set_min_deposit(&admin, &0, &100);
+
+    // 60 streams, each rate 1/s with 100s elapsed → 100 claimable each.
+    let mut ids = soroban_sdk::Vec::new(&env);
+    for _ in 0..60 {
+        ids.push_back(client.create_stream(
+            &employer,
+            &employee,
+            &token_id,
+            &10_000,
+            &1,
+            &0,
+            &None,
+            &None,
+        ));
+    }
+
+    env.ledger().with_mut(|l| l.timestamp += 100);
+
+    // First call: processes at most 50 streams and signals 10 remaining.
+    let (amounts, remaining) = client.withdraw_all(&employee);
+    assert_eq!(amounts.len(), 50, "first call must process the batch cap");
+    assert_eq!(remaining, 10, "10 streams must remain for the next call");
+
+    // No partial state: exactly the first 50 streams were withdrawn, the
+    // remaining 10 are untouched and still claimable.
+    let mut withdrawn_count = 0u32;
+    for id in ids.iter() {
+        let s = client.get_stream(&id);
+        if s.withdrawn > 0 {
+            withdrawn_count += 1;
+            assert_eq!(s.withdrawn, 100);
+        } else {
+            assert_eq!(client.claimable(&id), 100);
+        }
+    }
+    assert_eq!(withdrawn_count, 50);
+
+    // Second call drains the remaining 10 and reports none left.
+    let (amounts2, remaining2) = client.withdraw_all(&employee);
+    assert_eq!(amounts2.len(), 10);
+    assert_eq!(remaining2, 0);
+
+    // Third call is a no-op.
+    let (amounts3, remaining3) = client.withdraw_all(&employee);
+    assert_eq!(amounts3.len(), 0);
+    assert_eq!(remaining3, 0);
+}
+
 /// Partial claimable: some streams have tokens, some do not (e.g. one was
 /// just created with no elapsed time).
 #[test]
@@ -1962,6 +2024,113 @@ fn test_withdraw_all_partial_claimable() {
     // Only id1 has claimable tokens
     assert_eq!(results.len(), 1);
     assert_eq!(results.get(0).unwrap(), 1000); // 100s * 10/s
+}
+
+// ---------------------------------------------------------------------------
+// SC-97 – per-stream lifetime withdrawable cap (max_withdrawable)
+// ---------------------------------------------------------------------------
+
+/// A stream with a max_withdrawable cap stops paying out once the cap is hit.
+#[test]
+fn test_max_withdrawable_caps_withdrawals() {
+    let (env, client) = setup();
+    let admin = Address::generate(&env);
+    let employer = Address::generate(&env);
+    let employee = Address::generate(&env);
+    let token_id = setup_token(&env, &employer);
+
+    client.initialize(&admin);
+    let id = client.create_stream_with_cap(
+        &employer,
+        &employee,
+        &token_id,
+        &10_000,
+        &10,
+        &0,
+        &None,
+        &None,
+        &Some(500),
+    );
+
+    // 100s * 10/s = 1000 accrued, but the cap is 500.
+    env.ledger().with_mut(|l| l.timestamp += 100);
+    assert_eq!(client.claimable(&id), 500);
+    assert_eq!(client.withdraw(&employee, &id), 500);
+
+    // Cap reached: further accrual yields nothing.
+    env.ledger().with_mut(|l| l.timestamp += 100);
+    assert_eq!(client.claimable(&id), 0);
+    assert_eq!(client.withdraw(&employee, &id), 0);
+}
+
+/// Exact boundary: withdrawing exactly up to the cap succeeds, and the next
+/// withdrawal returns 0.
+#[test]
+fn test_max_withdrawable_exact_boundary() {
+    let (env, client) = setup();
+    let admin = Address::generate(&env);
+    let employer = Address::generate(&env);
+    let employee = Address::generate(&env);
+    let token_id = setup_token(&env, &employer);
+
+    client.initialize(&admin);
+    let id = client.create_stream_with_cap(
+        &employer,
+        &employee,
+        &token_id,
+        &10_000,
+        &10,
+        &0,
+        &None,
+        &None,
+        &Some(1_000),
+    );
+
+    // Withdraw 400, then 600 → exactly at the cap.
+    env.ledger().with_mut(|l| l.timestamp += 40);
+    assert_eq!(client.withdraw(&employee, &id), 400);
+    env.ledger().with_mut(|l| l.timestamp += 60);
+    assert_eq!(client.withdraw(&employee, &id), 600);
+
+    // One more second of accrual must not exceed the cap.
+    env.ledger().with_mut(|l| l.timestamp += 1);
+    assert_eq!(client.claimable(&id), 0);
+    assert_eq!(client.withdraw(&employee, &id), 0);
+}
+
+/// Cancelling a capped stream refunds the employer the unused cap portion.
+#[test]
+fn test_max_withdrawable_cancel_refunds_unused_cap() {
+    let (env, client) = setup();
+    let admin = Address::generate(&env);
+    let employer = Address::generate(&env);
+    let employee = Address::generate(&env);
+    let token_id = setup_token(&env, &employer);
+    let token = paystream_token::TokenContractClient::new(&env, &token_id);
+    let employer_before = token.balance(&employer);
+
+    client.initialize(&admin);
+    let id = client.create_stream_with_cap(
+        &employer,
+        &employee,
+        &token_id,
+        &10_000,
+        &10,
+        &0,
+        &None,
+        &None,
+        &Some(500),
+    );
+
+    // Accrue well past the cap, then cancel.
+    env.ledger().with_mut(|l| l.timestamp += 100);
+    client.cancel_stream(&employer, &id, &None);
+
+    // Employee receives only the capped 500; the rest (including the unused
+    // cap headroom) is refunded to the employer.
+    assert_eq!(token.balance(&employee), 500);
+    assert_eq!(token.balance(&employer), employer_before - 500);
+    assert_eq!(client.get_stream(&id).withdrawn, 500);
 }
 
 // ---------------------------------------------------------------------------

@@ -37,6 +37,21 @@ const scVec = (values: xdr.ScVal[]) => xdr.ScVal.scvVec(values);
 /** Lifecycle state of a stream, as decoded from the contract's StreamStatus enum. */
 export type StreamStatus = "Active" | "Paused" | "Cancelled" | "Exhausted";
 
+/** Stream kind, as decoded from the contract's StreamType enum. */
+export type StreamType = "Payroll" | "LinearVest";
+
+/** A linear vest schedule as returned by get_linear_vest_schedule. */
+export interface LinearVestSchedule {
+  /** Unix seconds when vesting begins. */
+  start_time: bigint;
+  /** Unix seconds when the full amount has vested. */
+  end_time: bigint;
+  /** Unix seconds of the cliff; nothing is claimable before it. */
+  cliff_time: bigint;
+  /** Total amount that vests over the schedule (base units). */
+  total_amount: bigint;
+}
+
 /** A stream as returned by get_stream / get_streams_batch (token amounts in base units). */
 export interface Stream {
   id: bigint;
@@ -53,11 +68,14 @@ export interface Stream {
   pending_accrual: bigint;
   locked: boolean;
   low_balance_threshold: bigint;
+  /** Present for LinearVest streams; absent/undefined for Payroll streams. */
+  stream_type?: string;
 }
 
 /** A stream enriched with client-side values for the dashboard tables. */
 export interface StreamRow extends Stream {
   status_label: StreamStatus;
+  type_label: StreamType;
   claimable: bigint;
   remaining: bigint;
 }
@@ -70,6 +88,15 @@ function normalizeStatus(raw: unknown): StreamStatus {
     (s) => s.toLowerCase() === name.toLowerCase(),
   );
   return (match as StreamStatus) || "Active";
+}
+
+// Same decoding strategy as normalizeStatus, for the StreamType enum. Streams
+// created before the vest feature existed carry no type, so default to Payroll.
+function normalizeType(raw: unknown): StreamType {
+  if (raw === undefined || raw === null) return "Payroll";
+  const name = String(typeof raw === "object" && raw !== null ? Object.keys(raw)[0] : raw);
+  const match = ["Payroll", "LinearVest"].find((s) => s.toLowerCase() === name.toLowerCase());
+  return (match as StreamType) || "Payroll";
 }
 
 /** Read-only contract call, simulated with the connected account as source. */
@@ -154,11 +181,83 @@ async function hydrate(source: string, ids: bigint[]): Promise<StreamRow[]> {
     )) as bigint[];
     streams.forEach((s, j) => {
       const status_label = normalizeStatus(s.status);
+      const type_label = normalizeType(s.stream_type);
       const claimable = status_label === "Active" ? claimables[j] : 0n;
-      rows.push({ ...s, status_label, claimable, remaining: s.deposit - s.withdrawn - claimable });
+      rows.push({
+        ...s,
+        status_label,
+        type_label,
+        claimable,
+        remaining: s.deposit - s.withdrawn - claimable,
+      });
     });
   }
   return rows;
+}
+
+/**
+ * Read a LinearVest stream's schedule (vest start/end, cliff, total amount).
+ * Returns null when the contract has no schedule for the id (e.g. Payroll).
+ */
+export async function loadLinearVestSchedule(
+  source: string,
+  streamId: bigint,
+): Promise<LinearVestSchedule | null> {
+  const raw = (await read(source, "get_linear_vest_schedule", u64(streamId))) as
+    | Partial<LinearVestSchedule>
+    | null
+    | undefined;
+  if (!raw) return null;
+  return {
+    start_time: BigInt(raw.start_time ?? 0n),
+    end_time: BigInt(raw.end_time ?? 0n),
+    cliff_time: BigInt(raw.cliff_time ?? 0n),
+    total_amount: BigInt(raw.total_amount ?? 0n),
+  };
+}
+
+/**
+ * Poll claimable_batch for `ids` every `intervalMs` and invoke `onTick` with a
+ * map of stream id → claimable amount. Returns an unsubscribe function.
+ * Errors are surfaced via `onError` (if provided) and do not stop the ticker.
+ */
+export function subscribeClaimable(
+  source: string,
+  ids: bigint[],
+  onTick: (claimable: Map<string, bigint>) => void,
+  intervalMs = 5000,
+  onError?: (err: unknown) => void,
+): () => void {
+  let stopped = false;
+  let timer: ReturnType<typeof setTimeout> | null = null;
+
+  const tick = async () => {
+    if (stopped) return;
+    try {
+      const result = new Map<string, bigint>();
+      for (let i = 0; i < ids.length; i += 50) {
+        const chunk = ids.slice(i, i + 50);
+        const claimables = (await read(
+          source,
+          "claimable_batch",
+          scVec(chunk.map((id) => u64(id))),
+        )) as bigint[];
+        chunk.forEach((id, j) => result.set(id.toString(), claimables[j] ?? 0n));
+      }
+      if (!stopped) onTick(result);
+    } catch (err) {
+      if (!stopped) onError?.(err);
+    } finally {
+      if (!stopped) timer = setTimeout(tick, intervalMs);
+    }
+  };
+
+  void tick();
+
+  return () => {
+    stopped = true;
+    if (timer) clearTimeout(timer);
+  };
 }
 
 /** Σ rate_per_second over the employer's Active streams (base units / second). */

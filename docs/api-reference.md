@@ -244,8 +244,17 @@ Employer creates a salary stream and deposits funds into the contract escrow.
 | `stop_time` | `u64` | Hard stop timestamp (0 = indefinite) |
 | `low_balance_threshold` | `Option<i128>` | Emit a `low_bal` event after any withdraw that leaves less than this remaining (`None`/0 = disabled) |
 | `cliff_time` | `Option<u64>` | Cliff timestamp (PROD-17). Nothing accrues before it; once passed, accrual runs from `cliff_time` (not from the start). `None`, or a cliff at/before now, means no cliff |
+| `max_withdrawable` | `Option<i128>` | Optional lifetime cap on total tokens the employee can ever withdraw from this stream (SC-97). `None` means uncapped. Must be > 0 when set |
 
 **Returns:** `u64` — the new stream ID
+
+**Withdrawable cap (SC-97):** When `max_withdrawable` is set, the stream stops
+accruing once cumulative withdrawals reach the cap — `claimable` returns `0`
+from that point on, even for an indefinite stream (`stop_time = 0`). The cap
+bounds the employee's lifetime payout, not the deposit: any deposit above the
+cap stays escrowed and is refunded to the employer on `cancel_stream` (or
+remains claimable by the employer via cancellation). Read the cap with
+`get_max_withdrawable(stream_id) -> Option<i128>`.
 
 **Cliff behaviour:** `claimable` is 0 while `now < cliff_time`. Withdrawing,
 pausing/resuming or changing the rate before the cliff never moves accrual
@@ -437,11 +446,24 @@ Employee withdraws all claimable tokens from every stream they receive in a sing
 
 **Returns:** `Vec<i128>` — amounts transferred in employee stream-index order, with one entry per stream that paid out; empty if nothing was claimable
 
+**Per-call limit (SC-58):** A single `withdraw_all` call processes at most
+`MAX_WITHDRAW_ALL_BATCH` = **50** streams from the employee's index. Employees
+with more than 50 streams must call `withdraw_all` repeatedly; each call
+advances past the streams it processed, so successive calls drain the remaining
+streams. The call is atomic — either every stream in the chunk is paid out and
+persisted, or the whole call reverts, so no partial state is ever left behind.
+
+**Signalling remaining streams:** When the employee's index holds more streams
+than the cap, the call emits a `withdraw_all_chunked` event carrying the number
+of streams processed and the number still remaining (see
+[Events](#withdraw_all_chunked)). Clients should keep calling `withdraw_all`
+until the event reports `remaining = 0` (or the returned vector is empty).
+
 **Errors:**
 - Panics if contract is paused
 - E003 if a reentrant withdraw is detected on any stream
 
-**Gas note:** Each stream in the employee's index incurs one `token::transfer` cross-contract call. For a 10-stream portfolio this is roughly 10× the cost of a single `withdraw` call; plan accordingly for large indexes.
+**Gas note:** Each stream in the chunk incurs one `token::transfer` cross-contract call. For a 10-stream portfolio this is roughly 10× the cost of a single `withdraw` call; the 50-stream cap keeps a single call within the instruction budget.
 
 **Example:**
 ```bash
@@ -1854,6 +1876,24 @@ Emitted once per stream, by the first `withdraw`, `withdraw_all`,
 
 ---
 
+### `withdraw_all_chunked`
+
+Emitted by `withdraw_all` when the employee's stream index exceeds
+`MAX_WITHDRAW_ALL_BATCH` (50) and the call processed only a chunk of it
+(SC-58). Off-chain clients use it to detect that further `withdraw_all` calls
+are required.
+
+| Field | Type | Description |
+|---|---|---|
+| `employee` | `Address` | Employee whose streams were processed (in topics) |
+| `processed` | `u32` | Number of streams processed in this call (≤ 50) |
+| `remaining` | `u32` | Number of streams still left to process after this call |
+
+**Topics:** `("v1", "wa_chunk", employee)`
+**Data:** `(processed, remaining)`
+
+---
+
 ### `stream_cancelled`
 
 Emitted by `cancel_stream` instead of the generic status event. Carries the exact cash-flow amounts so off-chain indexers can track fund movements without re-simulating the transaction.
@@ -1963,6 +2003,7 @@ Keep this table in sync with that file (see [CONTRIBUTING.md](../CONTRIBUTING.md
 | E009 | `ERR_BAD_NONCE` | Invalid admin nonce | `propose_admin`, `pause_contract`, `unpause_contract`, `set_min_deposit`, `expire_streams`, `upgrade`, `propose_upgrade`, `execute_upgrade`, `cancel_upgrade` | Read the current value with `admin_nonce` and pass it as `nonce` |
 | E009 | `ERR_BAD_NONCE` | Invalid admin nonce | `propose_admin`, `pause_contract`, `unpause_contract`, `set_min_deposit`, `set_protocol_fee`, `upgrade`, `propose_upgrade`, `execute_upgrade`, `cancel_upgrade` | Read the current value with `admin_nonce` and pass it as `nonce` |
 | E029 | `ERR_BATCH_TOO_LARGE` | Batch contains more than 50 streams | `create_streams_batch`, `cancel_streams_batch` | Split the operation into batches of at most 50 streams |
+| E036 | `ERR_INVALID_MAX_WITHDRAWABLE` | `max_withdrawable` must be > 0 when set | `create_stream`, `create_streams_batch` | Pass `None` or a positive cap |
 | E030 | `ERR_INVALID_STOP_TIME` | Nonzero stop time precedes last withdrawal | `update_stop_time` | Use 0 or a timestamp at/after `last_withdraw_time` |
 | T001 | `ERR_OVERFLOW` (token) | Token arithmetic overflow | Token `mint`, `mint_to_batch`, `transfer`, `transfer_from` | Use smaller amounts |
 | T002 | `ERR_PAUSED` (token) | Token is paused | Token `transfer`, `transfer_from`, `burn`, `burn_from` | Wait for the admin to call `unpause_token` |

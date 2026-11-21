@@ -220,6 +220,29 @@ pub fn cliff_reached(env: &Env, id: u64, cliff_time: u64) {
         .publish((symbol_short!("v1"), symbol_short!("cliff"), id), cliff_time);
 }
 
+/// Emitted by `withdraw_all` after each chunked call (SC-58).
+///
+/// `withdraw_all` processes at most `WITHDRAW_ALL_MAX_STREAMS` streams per
+/// invocation to stay within the instruction budget. This event lets
+/// off-chain clients drive the chunking loop:
+///
+/// - `processed` — number of streams withdrawn in this call
+/// - `remaining` — number of streams still pending (0 means the sweep is done)
+/// - `total_withdrawn` — tokens withdrawn across this call's streams
+///
+/// Topics: `("v1", "wd_all")`; data: `(processed, remaining, total_withdrawn)`.
+pub fn withdraw_all_chunked(
+    env: &Env,
+    processed: u32,
+    remaining: u32,
+    total_withdrawn: i128,
+) {
+    env.events().publish(
+        (symbol_short!("v1"), symbol_short!("wd_all")),
+        (processed, remaining, total_withdrawn),
+    );
+}
+
 // Restored from a97bb5d (dropped by a merge).
 /// Emitted when the admin changes the per-ledger stream creation cap (SEC-24).
 pub fn max_creates_per_ledger_updated(env: &Env, max: u32) {

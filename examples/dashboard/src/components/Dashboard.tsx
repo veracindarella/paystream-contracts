@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import {
   burnRate,
   ensureConnected,
@@ -13,6 +13,7 @@ import {
   withdrawAll,
   type StreamRow,
 } from "@/lib/stellar";
+import LinearVestProgress from "./LinearVestProgress";
 
 type Tab = "employer" | "employee";
 
@@ -198,6 +199,7 @@ function StreamTable({
           <th>Status</th>
           <th>Claimable</th>
           <th>Burn rate</th>
+          <th>Progress</th>
           {tab === "employee" && <th />}
         </tr>
       </thead>
@@ -213,6 +215,13 @@ function StreamTable({
             </td>
             <td>{formatAmount(s.claimable)}</td>
             <td>{s.status_label === "Active" ? `${formatAmount(s.rate_per_second)}/s` : "—"}</td>
+            <td>
+              {s.stream_type === "LinearVest" ? (
+                <LinearVestProgress stream={s} />
+              ) : (
+                <span className="muted">—</span>
+              )}
+            </td>
             {tab === "employee" && (
               <td style={{ textAlign: "right" }}>
                 <button

@@ -1,6 +1,70 @@
 {
   "_comment": "Baseline interface spec for the stream contract. Regenerate with scripts/check-interface.sh --update after intentional public interface changes.",
   "contract": "stream",
-  "functions": [],
-  "events": []
+  "functions": [
+    {
+      "name": "create",
+      "params": [
+        { "name": "employer", "type": "Address" },
+        { "name": "employee", "type": "Address" },
+        { "name": "token", "type": "Address" },
+        { "name": "deposit", "type": "i128" },
+        { "name": "rate", "type": "i128" },
+        { "name": "start_time", "type": "u64" },
+        { "name": "stop_time", "type": "u64" },
+        { "name": "max_withdrawable", "type": "Option<i128>" }
+      ],
+      "returns": "u64"
+    },
+    {
+      "name": "withdraw",
+      "params": [
+        { "name": "stream_id", "type": "u64" }
+      ],
+      "returns": "i128"
+    },
+    {
+      "name": "withdraw_all",
+      "params": [
+        { "name": "employee", "type": "Address" },
+        { "name": "cursor", "type": "u32" }
+      ],
+      "returns": {
+        "type": "struct",
+        "name": "WithdrawAllResult",
+        "fields": [
+          { "name": "withdrawn", "type": "i128" },
+          { "name": "processed", "type": "u32" },
+          { "name": "next_cursor", "type": "Option<u32>" },
+          { "name": "remaining", "type": "u32" }
+        ]
+      }
+    },
+    {
+      "name": "cancel",
+      "params": [
+        { "name": "stream_id", "type": "u64" }
+      ],
+      "returns": "i128"
+    }
+  ],
+  "events": [
+    {
+      "name": "withdraw_all_chunked",
+      "fields": [
+        { "name": "employee", "type": "Address" },
+        { "name": "withdrawn", "type": "i128" },
+        { "name": "processed", "type": "u32" },
+        { "name": "next_cursor", "type": "Option<u32>" },
+        { "name": "remaining", "type": "u32" }
+      ]
+    },
+    {
+      "name": "withdraw_all_complete",
+      "fields": [
+        { "name": "employee", "type": "Address" },
+        { "name": "total_withdrawn", "type": "i128" }
+      ]
+    }
+  ]
 }

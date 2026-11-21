@@ -191,7 +191,110 @@ cause the contract to drain more from the employer than intended, or cause it to
 
 ---
 
-## 5. Residual Risks
+## 5. Front-Running Analysis — Admin Nonce & Two-Step Transfers (SEC-40 / #586)
+
+Admin operations are authorised by `admin.require_auth()` **and** bound to a monotonically
+increasing nonce (`DataKey::AdminNonce`, consumed via `consume_admin_nonce` in `storage.rs`).
+This section analyses whether an attacker who observes a pending admin transaction in the
+mempool can front-run it, replay it, or substitute their own operation.
+
+### 5.1 Operations in Scope
+
+| Operation | Nonce binding | Notes |
+|---|---|---|
+| `pause_contract` / `unpause_contract` | Nonce parameter, consumed atomically | Replay of a captured pause is rejected (E009) |
+| `set_min_deposit` | Nonce parameter, consumed atomically | Same protection as pause |
+| `upgrade` (timelock) | Nonce parameter, consumed atomically | Timelock delay applies *in addition* to the nonce |
+| `propose_admin` | Nonce parameter, consumed atomically | Stores the **next** nonce expected by `accept_admin` |
+| `accept_admin` | Nonce must equal the nonce stored at proposal time | Two-step handover; see 5.3 |
+
+### 5.2 Nonce / Replay Protection
+
+- The nonce is stored in instance storage and incremented **inside the same invocation** that
+  performs the privileged action. Soroban executes a contract invocation atomically, so either
+  the state change and the nonce increment both commit or neither does.
+- A captured (signed) admin transaction cannot be re-submitted: the second submission presents
+  a nonce that is now stale and is rejected with **E009** (`InvalidAdminNonce`).
+- A captured transaction cannot be *reordered* ahead of the legitimate one to change its effect:
+  the operation is fully specified by the transaction payload (function, args, nonce), so
+  front-running it with the same payload simply consumes the nonce — the legitimate submission
+  then fails with E009 and the admin re-issues with the next nonce. No unauthorised state change
+  occurs because the front-runner cannot produce `admin.require_auth()`.
+- Because authorisation is cryptographic (`require_auth`), an attacker cannot substitute a
+  *different* operation under the same nonce: any altered payload fails auth.
+
+### 5.3 Two-Step Admin Handover (`propose_admin` / `accept_admin`)
+
+```
+Admin A ──propose_admin(new_admin = B, nonce = n)──▶ Contract
+                                                     │ stores PendingAdmin = B
+                                                     │ stores PendingAdminNonce = n + 1
+                                                     ▼
+Admin B ──accept_admin(nonce = n + 1)──────────────▶ Contract
+                                                     │ B.require_auth()
+                                                     │ nonce must == PendingAdminNonce
+                                                     │ Admin := B, pending cleared
+```
+
+- **`propose_admin`** requires `A.require_auth()` and consumes nonce `n`. It records the
+  proposed admin **and** the nonce that `accept_admin` must present (`n + 1`).
+- **`accept_admin`** requires `B.require_auth()` and must present exactly the nonce stored at
+  proposal time. A mismatched nonce is rejected with **E024** (`InvalidPendingAdminNonce`).
+- **Front-running `accept_admin`:** an attacker who sees B's pending `accept_admin` cannot
+  replay it (nonce consumed on first execution) and cannot execute it themselves (they cannot
+  satisfy `B.require_auth()`). Executing it *early* on B's behalf is harmless — the effect is
+  exactly the handover B intended.
+- **Front-running `propose_admin`:** an attacker cannot forge a competing proposal (needs
+  `A.require_auth()`). If the attacker replays A's captured proposal, the nonce is consumed and
+  the legitimate proposal fails with E009; A re-issues with the next nonce. The pending admin
+  recorded is still A's intended choice.
+- **Stale proposal:** if A proposes B and later changes their mind, A can re-propose C with a
+  fresh nonce; the stored `PendingAdminNonce` is overwritten, so B's previously observed
+  `accept_admin` nonce becomes stale and is rejected with E024.
+
+### 5.4 Upgrade Timelock
+
+- `upgrade` is bound to the admin nonce (E009 on replay) **and** gated by the timelock: the
+  WASM hash must have been scheduled at least `timelock_delay` ledgers earlier.
+- Front-running an `upgrade` cannot shorten the delay: the scheduled ledger is written when the
+  upgrade is queued, and the delay check is evaluated against the current ledger at execution.
+- An attacker replaying a captured `upgrade` is rejected by the nonce; an attacker attempting to
+  queue a *different* WASM hash fails `admin.require_auth()`.
+- The timelock gives users an observation window; a malicious queued upgrade is visible on-chain
+  before it can execute, allowing exit or governance response.
+
+### 5.5 Edge Cases — Stale Nonce
+
+| ID | Edge case | Behaviour |
+|---|---|---|
+| FR-01 | Two admin transactions signed with the same nonce (e.g., duplicated submission) | First commits; second rejected with **E009** |
+| FR-02 | Admin signs nonce `n` but a prior transaction already advanced the counter to `n + 1` | Rejected with **E009**; admin must re-read the current nonce and re-sign |
+| FR-03 | `accept_admin` presented with a nonce other than the one stored at proposal time | Rejected with **E024** |
+| FR-04 | `accept_admin` presented after the proposal was superseded by a newer `propose_admin` | Rejected with **E024** (stored nonce was overwritten) |
+| FR-05 | `accept_admin` presented with no pending proposal | Rejected (no `PendingAdmin` / `PendingAdminNonce` in storage) |
+| FR-06 | Nonce gap (admin skips a value) | Rejected — nonce must equal the stored value exactly; no gaps permitted |
+| FR-07 | Concurrent proposals from the same admin in the same ledger | Only one can commit; the other fails E009 and must be re-issued |
+
+### 5.6 Supporting Evidence
+
+- Unit tests in `contracts/stream/src/test.rs` cover replay rejection (E009) and mismatched
+  pending-admin nonce (E024).
+- The `fuzz_admin_nonce` target (`contracts/stream/fuzz/`) exercises arbitrary nonce sequences
+  against `pause_contract`, `propose_admin`, and `accept_admin`, asserting that no sequence of
+  replayed or out-of-order nonces can produce an unauthorised state change.
+
+### 5.7 Conclusion
+
+The admin nonce binds every privileged operation to a single, ordered execution and provides
+replay protection; the two-step handover additionally binds `accept_admin` to the nonce recorded
+at proposal time (E024). Combined with `require_auth()` and the upgrade timelock, front-running
+of admin operations yields at most a denial of the *specific* pending transaction (recoverable by
+re-issuing with the next nonce), never an unauthorised state change.
+
+---
+
+## 6. Residual Risks
+=======
 
 | ID | Risk | Likelihood | Impact | Notes |
 |---|---|---|---|---|
@@ -202,7 +305,7 @@ cause the contract to drain more from the employer than intended, or cause it to
 
 ---
 
-## 6. Security Controls Summary
+## 7. Security Controls Summary
 
 | Control | Issue | Implementation |
 |---|---|---|
@@ -216,10 +319,11 @@ cause the contract to drain more from the employer than intended, or cause it to
 | Emergency drain (planned) | #32 (SEC-03) | `propose_emergency_drain` + `emergency_drain` two-step; requires contract paused; see `docs/security/emergency-drain.md` |
 | Auto top-up cap + stop_time guard | #264 (SEC-26) | `maybe_auto_topup` enforces `max_total` cap and skips after `stop_time`; see Section 4 |
 | Rate-limit on stream creation | #262 (SEC-24) | `check_and_increment_create_rate` in `lib.rs`; `set_max_creates_per_ledger` admin function |
+| Two-step admin handover with nonce binding | #586 (SEC-40) | `propose_admin` stores `PendingAdminNonce`; `accept_admin` requires it (E024); see Section 5 |
 
 ---
 
-## 7. Out of Scope
+## 8. Out of Scope
 
 - Stellar validator security and consensus
 - Key management practices for the admin keypair

@@ -36,6 +36,61 @@ pub fn drain_timelock_elapsed(env: &Env, proposal: &EmergencyDrainProposal) -> b
     now.saturating_sub(proposal.proposed_at) >= DRAIN_TIMELOCK_SECONDS
 }
 
+/// Returns the optional lifetime-withdrawable cap for a stream, if set.
+pub fn get_max_withdrawable(env: &Env, stream_id: u64) -> Option<i128> {
+    env.storage()
+        .persistent()
+        .get(&crate::DataKey::MaxWithdrawable(stream_id))
+}
+
+/// Stores the optional lifetime-withdrawable cap for a stream.
+pub fn set_max_withdrawable(env: &Env, stream_id: u64, max_withdrawable: Option<i128>) {
+    match max_withdrawable {
+        Some(cap) => env
+            .storage()
+            .persistent()
+            .set(&crate::DataKey::MaxWithdrawable(stream_id), &cap),
+        None => env
+            .storage()
+            .persistent()
+            .remove(&crate::DataKey::MaxWithdrawable(stream_id)),
+    }
+}
+
+/// Removes the stored cap for a stream (used on cancel).
+pub fn clear_max_withdrawable(env: &Env, stream_id: u64) {
+    env.storage()
+        .persistent()
+        .remove(&crate::DataKey::MaxWithdrawable(stream_id));
+}
+
+/// Returns the remaining withdrawable amount under the optional cap, given the
+/// amount already withdrawn. Returns `None` when no cap is set.
+pub fn remaining_cap(env: &Env, stream_id: u64, withdrawn: i128) -> Option<i128> {
+    get_max_withdrawable(env, stream_id).map(|cap| cap.saturating_sub(withdrawn).max(0))
+}
+
+/// Caps `claimable` by the remaining lifetime-withdrawable allowance.
+/// Returns 0 once the cap has been reached.
+pub fn apply_withdrawable_cap(
+    env: &Env,
+    stream_id: u64,
+    withdrawn: i128,
+    claimable: i128,
+) -> i128 {
+    match remaining_cap(env, stream_id, withdrawn) {
+        Some(remaining) => claimable.min(remaining).max(0),
+        None => claimable,
+    }
+}
+
+/// Returns the unused portion of the cap for refund on cancel, i.e. the
+/// remaining allowance that was never withdrawn. Returns `None` when no cap
+/// is set (nothing to refund).
+pub fn unused_cap(env: &Env, stream_id: u64, withdrawn: i128) -> Option<i128> {
+    remaining_cap(env, stream_id, withdrawn)
+}
+
 /// Panics with `ERR_VERSION_DOWNGRADE` unless `new_version` is strictly greater
 /// than the stored `DataKey::Version`. Re-applying the same version is rejected.
 pub fn assert_version_upgrade(env: &Env, new_version: u32) {
