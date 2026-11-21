@@ -654,3 +654,100 @@ fn test_mint_to_batch_cap_exceeded() {
     }
     client.mint_to_batch(&admin, &0, &recipients);
 }
+
+// --- TEST-64: mint_to_batch overflow ---
+
+#[test]
+#[should_panic(expected = "T001: token arithmetic overflow")]
+fn test_mint_to_batch_overflow_reverts() {
+    let (env, client) = setup();
+    let admin = Address::generate(&env);
+    let a = Address::generate(&env);
+    let b = Address::generate(&env);
+    client.initialize(&admin, &(i128::MAX - 10));
+    client.mint_to_batch(&admin, &0, &vec![&env, (a, 5), (b, 10)]);
+}
+
+#[test]
+#[should_panic(expected = "T001: token arithmetic overflow")]
+fn test_mint_to_batch_entry_overflow_reverts() {
+    let (env, client) = setup();
+    let admin = Address::generate(&env);
+    let a = Address::generate(&env);
+    let b = Address::generate(&env);
+    // Total supply stays small so the aggregate sum fits, but recipient `a`
+    // already holds i128::MAX - 5, so crediting 10 overflows its balance.
+    client.initialize(&admin, &1_000);
+    client.mint(&admin, &a, &(i128::MAX - 5), &0);
+    client.mint_to_batch(&admin, &1, &vec![&env, (a, 10), (b, 1)]);
+}
+
+#[test]
+fn test_mint_to_batch_overflow_no_partial_mint() {
+    let (env, client) = setup();
+    let admin = Address::generate(&env);
+    let a = Address::generate(&env);
+    let b = Address::generate(&env);
+    client.initialize(&admin, &(i128::MAX - 10));
+    let supply_before = client.total_supply();
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        client.mint_to_batch(&admin, &0, &vec![&env, (a.clone(), 5), (b.clone(), 10)]);
+    }));
+    assert!(result.is_err());
+    assert_eq!(client.total_supply(), supply_before);
+    assert_eq!(client.balance(&a), 0);
+    assert_eq!(client.balance(&b), 0);
+    assert_eq!(client.admin_nonce(), 0);
+}
+
+#[test]
+fn test_mint_to_batch_entry_overflow_no_partial_mint() {
+    let (env, client) = setup();
+    let admin = Address::generate(&env);
+    let a = Address::generate(&env);
+    let b = Address::generate(&env);
+    client.initialize(&admin, &1_000);
+    client.mint(&admin, &a, &(i128::MAX - 5), &0);
+    let supply_before = client.total_supply();
+    let a_before = client.balance(&a);
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        client.mint_to_batch(&admin, &1, &vec![&env, (a.clone(), 10), (b.clone(), 1)]);
+    }));
+    assert!(result.is_err());
+    assert_eq!(client.total_supply(), supply_before);
+    assert_eq!(client.balance(&a), a_before);
+    assert_eq!(client.balance(&b), 0);
+    assert_eq!(client.admin_nonce(), 1);
+}
+
+// --- TEST-65: burn_from expired allowance ---
+
+#[test]
+#[should_panic(expected = "allowance expired")]
+fn test_burn_from_expired_allowance_rejected() {
+    let (env, client) = setup();
+    let admin = Address::generate(&env);
+    let spender = Address::generate(&env);
+    client.initialize(&admin, &1_000);
+    let exp = env.ledger().sequence() + 5;
+    client.approve(&admin, &spender, &300, &exp);
+    env.ledger().set_sequence_number(exp + 1);
+    client.burn_from(&spender, &admin, &100);
+}
+
+#[test]
+fn test_burn_from_with_allowance_decrements() {
+    let (env, client) = setup();
+    let admin = Address::generate(&env);
+    let user = Address::generate(&env);
+    let spender = Address::generate(&env);
+    client.initialize(&admin, &1_000);
+    client.transfer(&admin, &user, &500);
+    let exp = env.ledger().sequence() + 100;
+    client.approve(&user, &spender, &300, &exp);
+    let supply_before = client.total_supply();
+    client.burn_from(&spender, &user, &200);
+    assert_eq!(client.allowance(&user, &spender), (100, exp));
+    assert_eq!(client.balance(&user), 300);
+    assert_eq!(client.total_supply(), supply_before - 200);
+}

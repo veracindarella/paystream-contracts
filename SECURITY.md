@@ -95,13 +95,28 @@ see the separate [contributor bounty program](docs/bounties.md).
 
 ## Security Audits
 
-| Date | Auditor | Report | Remediation |
-|------|---------|--------|-------------|
-| 2026-04 | Trail of Bits | [2026-04-trail-of-bits.md](audits/2026-04-trail-of-bits.md) | [remediation.md](audits/remediation.md) |
+| Date | Auditor | Scope | Report | Remediation |
+|------|---------|-------|--------|-------------|
+| 2026-04 | Trail of Bits | Stream and token contracts, deployment scripts | [2026-04-trail-of-bits.md](audits/2026-04-trail-of-bits.md) | [remediation.md](audits/remediation.md) |
+| 2026 (v0.2) | TBD — independent auditor engaged for v0.2 mainnet readiness | Stream and token contracts, deployment scripts | Pending — will be published under [`audits/`](audits/) | Tracked as severity-labeled issues; all closed before mainnet |
 
 All high and medium findings from the April 2026 audit have been resolved. One low-severity
 finding (LOW-02: re-initialization guard) remains open and must be resolved before mainnet
 deployment. See [audits/remediation.md](audits/remediation.md) for the full status breakdown.
+
+### v0.2 Mainnet Readiness Audit
+
+Roadmap v0.2 requires an independent external audit before mainnet launch. The v0.2 audit
+covers **both contracts** (stream and token) and the deployment scripts in `scripts/`.
+
+- **Status:** auditor scoped and engaged; report pending.
+- **Publication:** the final report will be published under [`audits/`](audits/) alongside
+  the April 2026 report.
+- **Findings:** every finding is tracked as an issue labeled with its severity
+  (Critical / High / Medium / Low) and linked from
+  [audits/remediation.md](audits/remediation.md).
+- **Gate:** all remediation issues must be closed before mainnet deployment. Mainnet
+  launch is blocked until the v0.2 audit report is published and its remediation is complete.
 
 ---
 

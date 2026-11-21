@@ -1,5 +1,5 @@
 .PHONY: build test integration-test fmt fmt-check lint deny clean deploy-local deploy-testnet setup setup-hooks create-stream
-.PHONY: build test integration-test fmt fmt-check lint deny clean deploy-local deploy-testnet setup setup-hooks stream-status
+.PHONY: build test integration-test fmt fmt-check lint deny clean deploy-local deploy-testnet setup setup-hooks stream-status load-test-withdraw
 
 build:
 	stellar contract build
@@ -126,6 +126,12 @@ setup-hooks:
 
 create-stream:
 	./scripts/create-stream-wizard.sh
+
+# Drive N concurrent withdraws against a sandbox to measure throughput and contention.
+# Usage: make load-test-withdraw [N=<employees>] [CONCURRENCY=<parallel withdraws>]
+load-test-withdraw:
+	./scripts/load-test-withdraw.sh $(if $(N),N=$(N),) $(if $(CONCURRENCY),CONCURRENCY=$(CONCURRENCY),)
+
 stream-status:
 	@if [ -z "$(CONTRACT_ID)" ] || [ -z "$(EMPLOYER)" ]; then \
 		echo "Usage: make stream-status CONTRACT_ID=<ID> EMPLOYER=<ADDRESS> [NETWORK=testnet]"; \
