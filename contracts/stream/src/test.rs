@@ -249,6 +249,62 @@ fn test_protocol_fee_above_one_percent_is_rejected() {
     client.set_protocol_fee(&admin, &0, &101, &treasury);
 }
 
+/// TEST-51 (#566): a non-zero protocol fee is deducted from the deposit, the
+/// net amount is locked in the stream, and the treasury receives the fee.
+#[test]
+fn test_protocol_fee_deducted_and_treasury_transfer() {
+    let (env, client) = setup();
+    let admin = Address::generate(&env);
+    let employer = Address::generate(&env);
+    let employee = Address::generate(&env);
+    let treasury = Address::generate(&env);
+    let token_id = setup_token(&env, &employer);
+    let token = paystream_token::TokenContractClient::new(&env, &token_id);
+
+    client.initialize(&admin);
+    let treasury_before = token.balance(&treasury);
+    let employer_before = token.balance(&employer);
+
+    // 50 bps = 0.5% of 100_000 = 500 fee, 99_500 net locked.
+    client.set_protocol_fee(&admin, &0, &50, &treasury);
+    let id = client.create_stream(&employer, &employee, &token_id, &100_000, &10, &0, &None, &None);
+
+    let stream = client.get_stream(&id);
+    assert_eq!(stream.deposit, 99_500, "net deposit locked after fee");
+    assert_eq!(stream.withdrawn, 0);
+    assert_eq!(stream.status, StreamStatus::Active);
+
+    // Treasury received exactly the fee; employer paid the gross deposit.
+    assert_eq!(token.balance(&treasury), treasury_before + 500);
+    assert_eq!(token.balance(&employer), employer_before - 100_000);
+    assert_eq!(token.balance(&employee), 0);
+    assert_eq!(client.get_protocol_fee(), (50, Some(treasury)));
+}
+
+/// TEST-51 (#566): 0 bps disables the fee — the full deposit is locked and the
+/// treasury balance is unchanged.
+#[test]
+fn test_protocol_fee_zero_bps_disables_fee() {
+    let (env, client) = setup();
+    let admin = Address::generate(&env);
+    let employer = Address::generate(&env);
+    let employee = Address::generate(&env);
+    let treasury = Address::generate(&env);
+    let token_id = setup_token(&env, &employer);
+    let token = paystream_token::TokenContractClient::new(&env, &token_id);
+
+    client.initialize(&admin);
+    let treasury_before = token.balance(&treasury);
+
+    client.set_protocol_fee(&admin, &0, &0, &treasury);
+    let id = client.create_stream(&employer, &employee, &token_id, &100_000, &10, &0, &None, &None);
+
+    let stream = client.get_stream(&id);
+    assert_eq!(stream.deposit, 100_000, "full deposit locked when fee is 0 bps");
+    assert_eq!(token.balance(&treasury), treasury_before, "treasury unchanged");
+    assert_eq!(client.get_protocol_fee(), (0, Some(treasury)));
+}
+
 #[test]
 fn test_protocol_fee_applies_to_batch_stream_creation() {
     let (env, client) = setup();
@@ -2965,6 +3021,57 @@ fn test_get_auto_topup_config_configured_returns_config() {
     // After cancellation, get_auto_topup_config returns None again
     client.cancel_auto_topup(&employer, &id);
     assert_eq!(client.get_auto_topup_config(&id), None);
+}
+
+// ---------------------------------------------------------------------------
+// TEST-50 (#565) – auto top-up failure must not revert the withdraw
+// ---------------------------------------------------------------------------
+
+/// When the auto top-up `transfer_from` fails (insufficient allowance or
+/// balance), the withdraw must still succeed, the stream must stay Active and
+/// no partial top-up state may be left behind.
+#[test]
+fn test_withdraw_auto_topup_insufficient_allowance_no_revert() {
+    let (env, client) = setup();
+    let admin = Address::generate(&env);
+    let employer = Address::generate(&env);
+    let employee = Address::generate(&env);
+    let token_id = setup_token(&env, &employer);
+    let token = paystream_token::TokenContractClient::new(&env, &token_id);
+
+    client.initialize(&admin);
+    client.set_min_deposit(&admin, &0, &100);
+    let id = client.create_stream(&employer, &employee, &token_id, &1_000, &10, &0, &None, &None);
+
+    // Configure auto top-up: trigger below 500, top up 5_000, max total 50_000.
+    client.set_auto_topup(&employer, &id, &500, &5_000, &50_000);
+
+    // Drain the employer's balance so the top-up `transfer_from` cannot succeed.
+    let employer_balance = token.balance(&employer);
+    token.burn(&employer, &employer_balance);
+
+    env.ledger().with_mut(|l| l.timestamp += 100);
+
+    let before = client.get_stream(&id);
+    let withdrawn = client.withdraw(&employee, &id);
+
+    // (a) withdraw succeeds and pays out the accrued amount.
+    assert_eq!(withdrawn, 1_000);
+    assert_eq!(token.balance(&employee), 1_000);
+
+    // (b) stream continues Active.
+    let after = client.get_stream(&id);
+    assert_eq!(after.status, StreamStatus::Active);
+
+    // (c) no partial state: only the withdrawal is reflected; the failed
+    // top-up leaves the deposit and the auto-topup totals untouched.
+    assert_eq!(after.deposit, before.deposit);
+    assert_eq!(after.withdrawn, before.withdrawn + withdrawn);
+    let config = client.get_auto_topup_config(&id).expect("config still set");
+    assert_eq!(config.total_topped_up, 0, "failed top-up must not be recorded");
+    assert_eq!(config.topup_amount, 5_000);
+    assert_eq!(config.trigger_threshold, 500);
+    assert_eq!(config.max_total, 50_000);
 }
 
 // ---------------------------------------------------------------------------

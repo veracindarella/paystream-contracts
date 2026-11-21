@@ -23,6 +23,7 @@ cargo test --package paystream-stream-fuzz --bin <target-name>
 | `fuzz_batch_cancel` | TEST-21 (#244) | `cancel_streams_batch` handles random stream ID sets, wrong owners, over-limit batches |
 | `prop_state_machine` | TEST-02 | Full lifecycle state-machine: status transitions, withdrawn ≤ deposit, claimable ≥ 0 |
 | `prop_claimable_invariant` | TEST-22 (#245) | `claimable ≤ deposit - withdrawn` for all inputs; zero for Paused / Cancelled / Exhausted |
+| `prop_linear_vest_pause_resume` | SC-118 (#486) | Linear vest claimable is monotonic in time and bounded by `total_grant` across cliff and pause/resume cycles, including overflow paths |
 
 ---
 
@@ -34,6 +35,7 @@ The CI fuzz workflow runs each target for 30 seconds with a fixed seed:
 PROPTEST_SEED=0 cargo test --package paystream-stream-fuzz --bin fuzz_batch_create
 PROPTEST_SEED=0 cargo test --package paystream-stream-fuzz --bin fuzz_batch_cancel
 PROPTEST_SEED=0 cargo test --package paystream-stream-fuzz --bin prop_claimable_invariant
+PROPTEST_SEED=0 cargo test --package paystream-stream-fuzz --bin prop_linear_vest_pause_resume
 ```
 
 Targets are expected to complete without new crashes. Any panic not matching
