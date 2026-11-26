@@ -1299,6 +1299,11 @@ Before applying the new rate, any tokens accrued since the last withdrawal are s
 - Panics if stream is not Active or Paused
 - E001 if `new_rate` ≤ 0
 - E008 if `new_rate` > 1,000,000,000
+- E036 if the stream is a linear vest stream. Linear vest streams use a vest
+  schedule (`total_grant` over `vest_period`, see `create_linear_vest`) rather
+  than a per-second rate, so their rate cannot be changed. This is a clearer
+  error for the same restriction that previously rejected linear vest streams
+  with a generic payroll-stream assertion; no other behaviour changes.
 
 **Emitted event:** `rate_updated(stream_id, old_rate, new_rate)`
 
@@ -1498,6 +1503,13 @@ is never refunded twice.
 - E036 if the stream is immutable (SC-77)
 
 **Emitted event:** `stream_cancelled` (enriched, including the `fee_refund` amount — see [Events](#events) section)
+
+**Refund rounding (dust):** the refund is computed as `deposit - withdrawn - claimable_paid`
+using the same integer accrual as `claimable`, so any sub-token dust left by
+rounding is returned to the employer rather than locked in the contract. The
+employee always receives the full claimable amount they earned; dust never
+reduces or blocks employee funds, and no funds remain permanently locked after
+cancellation.
 
 **Example:**
 ```bash

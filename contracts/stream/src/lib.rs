@@ -2092,6 +2092,8 @@ impl StreamContract {
         let claimable = stream_claimable_amount(&env, &stream, now);
         let token_client = token::Client::new(&env, &stream.token);
 
+        // SC-112: settle the employee's earned-but-unwithdrawn amount first so
+        // that no earned funds can be stranded by the refund computation.
         if claimable > 0 {
             token_client.transfer(
                 &env.current_contract_address(),
@@ -2101,11 +2103,11 @@ impl StreamContract {
             stream.withdrawn = stream.withdrawn.checked_add(claimable).expect(ERR_OVERFLOW);
         }
 
-        let refund = stream
-            .deposit
-            .checked_sub(stream.withdrawn)
-            .unwrap_or(0)
-            .max(0);
+        // SC-112: refund the full remaining deposit. Integer accrual rounding
+        // can leave tiny dust in `deposit - withdrawn`; refunding the exact
+        // remainder guarantees that `claimable + refund == deposit`, so no
+        // funds are permanently locked in the contract due to rounding.
+        let refund = utils::cancel_refund(&stream);
         if refund > 0 {
             token_client.transfer(&env.current_contract_address(), &employer, &refund);
         }
@@ -2159,6 +2161,8 @@ impl StreamContract {
             let claimable = stream_claimable_amount(&env, &stream, now);
             let token_client = token::Client::new(&env, &stream.token);
 
+            // SC-112: settle the employee's earned-but-unwithdrawn amount first
+            // so that no earned funds can be stranded by the refund computation.
             if claimable > 0 {
                 token_client.transfer(
                     &env.current_contract_address(),
@@ -2168,11 +2172,9 @@ impl StreamContract {
                 stream.withdrawn = stream.withdrawn.checked_add(claimable).expect(ERR_OVERFLOW);
             }
 
-            let refund = stream
-                .deposit
-                .checked_sub(stream.withdrawn)
-                .unwrap_or(0)
-                .max(0);
+            // SC-112: refund the full remaining deposit so integer rounding
+            // dust is never locked; `claimable + refund == deposit` exactly.
+            let refund = utils::cancel_refund(&stream);
             if refund > 0 {
                 token_client.transfer(&env.current_contract_address(), &employer, &refund);
             }

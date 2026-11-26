@@ -11,6 +11,9 @@ pub const TTL_EXTEND_TO: u32 = 12_614_400;
 /// TOK-18: 24-hour upgrade time-lock, in seconds.
 pub const UPGRADE_TIMELOCK: u64 = 86_400;
 
+/// TOK-30: 24-hour emergency drain time-lock, in seconds.
+pub const DRAIN_TIMELOCK: u64 = 86_400;
+
 pub fn extend_instance_ttl(env: &Env) {
     env.storage()
         .instance()
