@@ -8617,3 +8617,107 @@ fn test_withdraw_to_requires_holder_auth() {
     let res = client.try_withdraw_to(&attacker, &stream_id, &savings);
     assert!(res.is_err(), "withdraw_to must require the holder's auth");
 }
+
+// ---------------------------------------------------------------------------
+// SC-66 (#434): configurable per-stream max deposit cap
+// ---------------------------------------------------------------------------
+
+/// Default max deposit is 0 (unlimited): a very large deposit is accepted.
+#[test]
+fn test_max_deposit_defaults_to_unlimited() {
+    let (env, client) = setup();
+    let admin = Address::generate(&env);
+    let employer = Address::generate(&env);
+    let employee = Address::generate(&env);
+    let token_id = setup_token(&env, &employer);
+
+    client.initialize(&admin);
+    assert_eq!(client.get_max_deposit(), 0, "max deposit must default to 0 (off)");
+
+    // 500_000_000 is far above any cap we set in other tests; with the default
+    // of 0 (unlimited) it must be accepted.
+    let id = client.create_stream(
+        &employer,
+        &employee,
+        &token_id,
+        &500_000_000,
+        &1,
+        &0,
+        &None,
+        &None,
+    );
+    assert_eq!(client.get_stream(&id).deposit, 500_000_000);
+}
+
+/// Boundary: deposit == max_deposit is allowed.
+#[test]
+fn test_create_stream_deposit_equal_to_max_deposit_succeeds() {
+    let (env, client) = setup();
+    let admin = Address::generate(&env);
+    let employer = Address::generate(&env);
+    let employee = Address::generate(&env);
+    let token_id = setup_token(&env, &employer);
+
+    client.initialize(&admin);
+    client.set_max_deposit(&admin, &0, &10_000);
+    assert_eq!(client.get_max_deposit(), 10_000);
+
+    let id = client.create_stream(&employer, &employee, &token_id, &10_000, &1, &0, &None, &None);
+    assert_eq!(client.get_stream(&id).deposit, 10_000);
+}
+
+/// Boundary: deposit == max_deposit + 1 is rejected with ERR_ABOVE_MAX_DEPOSIT.
+#[test]
+#[should_panic(expected = "E036")]
+fn test_create_stream_deposit_above_max_deposit_rejected() {
+    let (env, client) = setup();
+    let admin = Address::generate(&env);
+    let employer = Address::generate(&env);
+    let employee = Address::generate(&env);
+    let token_id = setup_token(&env, &employer);
+
+    client.initialize(&admin);
+    client.set_max_deposit(&admin, &0, &10_000);
+
+    // 10_001 > max_deposit = 10_000 → ERR_ABOVE_MAX_DEPOSIT
+    client.create_stream(&employer, &employee, &token_id, &10_001, &1, &0, &None, &None);
+}
+
+/// Setting max_deposit back to 0 disables the cap again.
+#[test]
+fn test_set_max_deposit_zero_disables_cap() {
+    let (env, client) = setup();
+    let admin = Address::generate(&env);
+    let employer = Address::generate(&env);
+    let employee = Address::generate(&env);
+    let token_id = setup_token(&env, &employer);
+
+    client.initialize(&admin);
+    client.set_max_deposit(&admin, &0, &1_000);
+    client.set_max_deposit(&admin, &1, &0);
+    assert_eq!(client.get_max_deposit(), 0);
+
+    let id = client.create_stream(&employer, &employee, &token_id, &50_000, &1, &0, &None, &None);
+    assert_eq!(client.get_stream(&id).deposit, 50_000);
+}
+
+/// Non-admin callers cannot change the max deposit.
+#[test]
+#[should_panic]
+fn test_set_max_deposit_non_admin_rejected() {
+    let env = Env::default();
+    let contract_id = env.register(StreamContract, ());
+    let client = StreamContractClient::new(&env, &contract_id);
+
+    env.mock_all_auths();
+    let admin = Address::generate(&env);
+    client.initialize(&admin);
+
+    // Fresh env without mocked auths: the attacker's call must fail auth.
+    let env2 = Env::default();
+    env2.register_at(&contract_id, StreamContract, ());
+    let client2 = StreamContractClient::new(&env2, &contract_id);
+
+    let attacker = Address::generate(&env2);
+    client2.set_max_deposit(&attacker, &0, &1_000);
+}

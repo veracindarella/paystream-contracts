@@ -565,8 +565,8 @@ pub const ERR_SPLIT_BASIS_INVALID: &str = "E038: split beneficiary basis points 
 pub const ERR_SPLIT_TOO_FEW: &str = "E033: split stream must have at least 2 beneficiaries";
 
 // Restored from cf48a49 (dropped by a merge).
-/// E032: split stream cannot have more than 20 beneficiaries
-pub const ERR_SPLIT_TOO_MANY: &str = "E032: split stream cannot have more than 20 beneficiaries";
+/// E037: split stream cannot have more than 20 beneficiaries
+pub const ERR_SPLIT_TOO_MANY: &str = "E037: split stream cannot have more than 20 beneficiaries";
 
 // Restored from cf48a49 (dropped by a merge).
 /// Maximum number of beneficiaries in a split stream.
@@ -577,8 +577,8 @@ pub const MAX_SPLIT_BENEFICIARIES: u32 = 20;
 pub const ERR_INVALID_STOP_TIME: &str = "E039: stop_time precedes last_withdraw_time";
 
 // Restored from a74e8f6 (dropped by a merge).
-/// `execute_upgrade` was called before the timelock expired.
-pub const ERR_UPGRADE_TIMELOCK_ACTIVE: &str = "E034: upgrade timelock has not yet expired";
+/// E039: `execute_upgrade` was called before the timelock expired.
+pub const ERR_UPGRADE_TIMELOCK_ACTIVE: &str = "E039: upgrade timelock has not yet expired";
 
 // Restored from ce6fe77 (dropped by a merge).
 /// E040: `archive_stream` was called on a stream that is still Active or Paused.

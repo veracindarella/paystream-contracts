@@ -31,6 +31,7 @@ pub const MAX_LOW_BALANCE_THRESHOLD: i128 = 1_000_000_000_000_000_000_000_000_00
 pub fn validate_create_stream(
     deposit: i128,
     min_deposit: i128,
+    max_deposit: i128,
     rate_per_second: i128,
     stop_time: u64,
     now: u64,

@@ -380,6 +380,33 @@ stellar contract invoke --id <STREAM_ID> --source <ADMIN_KEY> --network testnet 
 
 ---
 
+### `set_max_deposit`
+
+Admin sets the maximum deposit enforced on `create_stream` and `create_streams_batch`. A value of `0` disables the cap (unlimited), which is the default for backward compatibility.
+
+**Caller:** Admin
+
+| Parameter | Type | Description |
+|---|---|---|
+| `admin` | `Address` | Must equal the stored admin |
+| `nonce` | `u64` | Current admin nonce (replay protection) |
+| `amount` | `i128` | New maximum deposit (`0` = unlimited; must be ≥ 0) |
+
+**Returns:** nothing
+
+**Errors:**
+- Panics if `admin` auth fails or does not match stored admin
+- Panics if `nonce` is wrong (E009)
+- Panics if `amount` < 0 (E002)
+
+**Example:**
+```bash
+stellar contract invoke --id <STREAM_ID> --source <ADMIN_KEY> --network testnet \
+  -- set_max_deposit --admin <ADMIN_ADDRESS> --nonce 2 --amount 100000000
+```
+
+---
+
 ### `expire_streams`
 
 Admin batch-expires streams that crossed `stop_time + GRACE_PERIOD` and have no remaining claimable tokens. Ineligible entries are skipped without reverting. The admin nonce is consumed even when every stream is skipped.
@@ -525,6 +552,7 @@ cliff with `get_cliff_time(stream_id) -> Option<u64>`.
 - E037 if `rate_schedule` is not strictly ascending by timestamp, contains a timestamp in the past, or contains a rate outside `1..=1,000,000,000`
 - E002 if `deposit` ≤ 0
 - E007 if `deposit` < minimum deposit
+- E036 if `deposit` exceeds the configured maximum deposit (when `set_max_deposit` is non-zero)
 - E001 if `rate_per_second` ≤ 0
 - E008 if `rate_per_second` > 1,000,000,000
 - Panics if `stop_time` is in the past (when non-zero)
@@ -2496,7 +2524,7 @@ employer's template: lookups are keyed by `(employer, template_id)`.
 | `template_id` | `u32` | Template to delete |
 
 Removes the template and drops it from `list_templates`. Streams already
-created from it are unaffected. **Errors:** E031 if no such template exists for
+created from it are unaffected. **Errors:** E032 if no such template exists for
 this employer.
 
 ### `get_template` / `list_templates`

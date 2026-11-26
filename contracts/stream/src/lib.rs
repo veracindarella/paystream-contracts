@@ -423,6 +423,31 @@ impl StreamContract {
         events::min_deposit_updated(&env, old_amount, amount);
     }
 
+    /// Set the maximum deposit enforced on `create_stream` (SC-66).
+    ///
+    /// Streams created after this call must have `deposit <= amount`. A value
+    /// of `0` disables the cap (unlimited), which is the default for backward
+    /// compatibility. Existing streams are unaffected.
+    ///
+    /// # Parameters
+    /// - `admin` — must match the stored admin (requires auth)
+    /// - `nonce` — current admin nonce (replay protection)
+    /// - `amount` — new maximum deposit (must be ≥ 0; 0 = unlimited)
+    ///
+    /// # Errors
+    /// - Panics if `admin` auth fails or does not match stored admin
+    /// - E009 if `nonce` is wrong
+    /// - Panics if `amount` < 0
+    pub fn set_max_deposit(env: Env, admin: Address, nonce: u64, amount: i128) {
+        admin.require_auth();
+        let stored_admin = get_admin(&env);
+        assert_eq!(admin, stored_admin, "{}", ERR_NOT_ADMIN);
+        consume_admin_nonce(&env, nonce);
+        assert!(amount >= 0, "max deposit must be non-negative");
+        set_max_deposit(&env, amount);
+        events::max_deposit_updated(&env, amount);
+    }
+
     /// Set the maximum number of streams an employer may create per ledger.
     ///
     /// The default is 50. The new value takes effect immediately for the next
@@ -593,8 +618,9 @@ impl StreamContract {
     /// - `employer` — employer address; funds are pulled from here (requires auth)
     /// - `employee` — employee address; receives streamed tokens
     /// - `token_address` — SEP-41 token contract address
-    /// - `deposit` — gross tokens to fund the stream (must be ≥ min deposit); any
-    ///   configured protocol fee is deducted before the net amount is locked
+    /// - `deposit` — gross tokens to fund the stream (must be ≥ min deposit and,
+    ///   when a max deposit is configured, ≤ max deposit); any configured
+    ///   protocol fee is deducted before the net amount is locked
     /// - `rate_per_second` — tokens streamed per second (1 – 1,000,000,000)
     /// - `stop_time` — hard stop timestamp in seconds; 0 means indefinite
     /// - `low_balance_threshold` — optional low-balance alert level
@@ -647,9 +673,11 @@ impl StreamContract {
 
         let now = env.ledger().timestamp();
         let min_deposit = get_min_deposit(&env);
+        let max_deposit = get_max_deposit(&env);
         validate_create_stream(
             deposit,
             min_deposit,
+            max_deposit,
             rate_per_second,
             stop_time,
             now,
@@ -821,6 +849,12 @@ impl StreamContract {
             "{}",
             ERR_BELOW_MIN_DEPOSIT
         );
+        let max_deposit = get_max_deposit(&env);
+        assert!(
+            max_deposit == 0 || total_grant <= max_deposit,
+            "{}",
+            ERR_ABOVE_MAX_DEPOSIT
+        );
         assert!(vest_period > 0, "vest period must be greater than zero");
         assert!(
             cliff.is_none_or(|cliff_duration| cliff_duration <= vest_period),
@@ -924,6 +958,7 @@ impl StreamContract {
 
         let now = env.ledger().timestamp();
         let min_deposit = get_min_deposit(&env);
+        let max_deposit = get_max_deposit(&env);
         let mut ids: Vec<u64> = Vec::new(&env);
         let mut index: u32 = 0;
 
@@ -941,6 +976,12 @@ impl StreamContract {
                 "stream[{}]: {}",
                 index,
                 ERR_BELOW_MIN_DEPOSIT
+            );
+            assert!(
+                max_deposit == 0 || p.deposit <= max_deposit,
+                "stream[{}]: {}",
+                index,
+                ERR_ABOVE_MAX_DEPOSIT
             );
             assert!(
                 p.rate_per_second > 0,
@@ -1071,6 +1112,7 @@ impl StreamContract {
     /// # Errors
     /// - Panics if contract is paused
     /// - E007 if deposit < minimum
+    /// - E036 if a max deposit is configured and deposit > max deposit
     /// - E001 if rate_per_second ≤ 0
     /// - E008 if rate_per_second exceeds maximum
     /// - E022 if stop_time is set and in the past
@@ -1092,10 +1134,16 @@ impl StreamContract {
 
         let now = env.ledger().timestamp();
         let min_deposit = get_min_deposit(&env);
+        let max_deposit = get_max_deposit(&env);
 
         // Validate the base stream parameters
         assert!(deposit > 0, "{}", ERR_ZERO_DEPOSIT);
         assert!(deposit >= min_deposit, "{}", ERR_BELOW_MIN_DEPOSIT);
+        assert!(
+            max_deposit == 0 || deposit <= max_deposit,
+            "{}",
+            ERR_ABOVE_MAX_DEPOSIT
+        );
         assert!(rate_per_second > 0, "{}", ERR_ZERO_RATE);
         assert!(
             rate_per_second <= validate::MAX_RATE_PER_SECOND,
