@@ -5,6 +5,7 @@ members = [
     "contracts/token",
     "contracts/stream/fuzz",
     "contracts/token/fuzz",
+    "backend",
 ]
 
 [workspace.package]

@@ -36,6 +36,9 @@ jobs:
 
       - name: Run integration tests
         run: make integration-test
+        # make integration-test invokes tests/integration/run.sh, which covers the
+        # full lifecycle plus batch create/cancel, split, linear vest, and settle
+        # at stop_time (TEST-58 / #573).
 
       - name: Verify deployed contract checksum
         if: ${{ env.CONTRACT_ID != '' && env.WASM_PATH != '' }}

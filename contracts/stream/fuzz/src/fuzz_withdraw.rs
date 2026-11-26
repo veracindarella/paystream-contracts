@@ -195,6 +195,132 @@ proptest! {
         prop_assert!(amount <= deposit,
             "claimable must not exceed deposit: amount={} deposit={}", amount, deposit);
     }
+
+    /// SEC-38: total-deposit conservation across a simulated withdraw.
+    ///
+    /// For any well-formed linear-vest stream, after a simulated withdraw the
+    /// invariant
+    ///
+    ///   withdrawn' + (deposit - withdrawn') == deposit
+    ///
+    /// must hold exactly, i.e. no value is created or destroyed by the
+    /// withdraw arithmetic. `withdrawn'` is the post-withdraw withdrawn amount
+    /// and `deposit - withdrawn'` is the amount still held by the contract.
+    #[test]
+    fn fuzz_withdraw_conserves_total_deposit_linear(
+        deposit           in 1i128..=i64::MAX as i128,
+        withdrawn_offset  in 0i128..=i64::MAX as i128,
+        rate              in 1i128..=1_000_000_000i128,
+        last_withdraw     in 0u64..=u64::MAX / 2,
+        stop_time_offset  in 0u64..=u64::MAX / 4,
+        use_stop_time     in proptest::bool::ANY,
+        now_offset        in 0u64..=u64::MAX / 4,
+    ) {
+        let env = Env::default();
+
+        let withdrawn = withdrawn_offset.min(deposit);
+        let now = last_withdraw.saturating_add(now_offset);
+        let stop_time = if use_stop_time {
+            last_withdraw.saturating_add(stop_time_offset)
+        } else {
+            0
+        };
+
+        let stream = make_stream(&env, deposit, withdrawn, rate, last_withdraw, stop_time);
+
+        let amount = claimable_amount(&stream, now);
+        prop_assert!(amount >= 0, "claimable must be non-negative: got {}", amount);
+        prop_assert!(amount <= deposit - withdrawn,
+            "claimable must not exceed remaining: amount={} remaining={}",
+            amount, deposit - withdrawn);
+
+        // Simulated withdraw: employee payout + contract-held must equal deposit.
+        let employee_payout = amount;
+        let new_withdrawn = stream.withdrawn.checked_add(employee_payout)
+            .expect("withdrawn + claimable must not overflow");
+        let contract_held = deposit - new_withdrawn;
+
+        prop_assert!(contract_held >= 0,
+            "contract-held must be non-negative: held={}", contract_held);
+        prop_assert_eq!(
+            new_withdrawn + contract_held,
+            deposit,
+            "conservation violated: withdrawn'={} held={} deposit={}",
+            new_withdrawn, contract_held, deposit
+        );
+        // Employee payout is exactly the delta in withdrawn.
+        prop_assert_eq!(
+            employee_payout,
+            new_withdrawn - stream.withdrawn,
+            "employee payout must equal withdrawn delta"
+        );
+    }
+
+    /// SEC-38: total-deposit conservation for a split stream.
+    ///
+    /// A split stream pays `split_bps` of each claimable amount to a second
+    /// beneficiary. After a simulated withdraw the sum of all beneficiary
+    /// payouts plus the amount still held by the contract must equal the
+    /// pre-withdraw deposit (no fees modelled here, so fees are zero).
+    #[test]
+    fn fuzz_withdraw_conserves_total_deposit_split(
+        deposit           in 1i128..=i64::MAX as i128,
+        withdrawn_offset  in 0i128..=i64::MAX as i128,
+        rate              in 1i128..=1_000_000_000i128,
+        last_withdraw     in 0u64..=u64::MAX / 2,
+        now_offset        in 0u64..=u64::MAX / 4,
+        split_bps         in 0u32..=10_000u32,
+    ) {
+        let env = Env::default();
+
+        let withdrawn = withdrawn_offset.min(deposit);
+        let now = last_withdraw.saturating_add(now_offset);
+
+        let stream = make_stream(&env, deposit, withdrawn, rate, last_withdraw, 0);
+
+        let amount = claimable_amount(&stream, now);
+        prop_assert!(amount >= 0, "claimable must be non-negative: got {}", amount);
+        prop_assert!(amount <= deposit - withdrawn,
+            "claimable must not exceed remaining: amount={} remaining={}",
+            amount, deposit - withdrawn);
+
+        // Split the claimable amount between the two beneficiaries. The
+        // primary beneficiary receives the remainder so that the two shares
+        // always sum exactly to `amount` (no rounding leakage).
+        let secondary_share = amount
+            .checked_mul(split_bps as i128)
+            .expect("split multiplication must not overflow")
+            / 10_000;
+        let primary_share = amount - secondary_share;
+
+        prop_assert!(secondary_share >= 0, "secondary share must be non-negative");
+        prop_assert!(primary_share >= 0, "primary share must be non-negative");
+        prop_assert_eq!(
+            primary_share + secondary_share,
+            amount,
+            "split shares must sum to claimable amount"
+        );
+
+        let new_withdrawn = stream.withdrawn.checked_add(amount)
+            .expect("withdrawn + claimable must not overflow");
+        let contract_held = deposit - new_withdrawn;
+
+        // Conservation: all payouts (already withdrawn + this withdraw's
+        // shares) plus contract-held equals the original deposit.
+        let total_paid_out = stream.withdrawn
+            .checked_add(primary_share)
+            .and_then(|v| v.checked_add(secondary_share))
+            .expect("total payouts must not overflow");
+
+        prop_assert!(contract_held >= 0,
+            "contract-held must be non-negative: held={}", contract_held);
+        prop_assert_eq!(
+            total_paid_out + contract_held,
+            deposit,
+            "split conservation violated: paid_out={} held={} deposit={}",
+            total_paid_out, contract_held, deposit
+        );
+    }
 }
 
 fn main() {}

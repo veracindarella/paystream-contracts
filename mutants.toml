@@ -1,0 +1,19 @@
+# TEST-62: cargo-mutants configuration for the stream contract's core math.
+#
+# Scope is restricted to the arithmetic-heavy files that compute claimable
+# amounts, fees and balances; these are the functions where a surviving
+# mutant represents real financial risk. Other files (storage glue, event
+# emission, admin plumbing) are excluded to keep CI runtime bounded.
+examine_globs = [
+    "contracts/stream/src/lib.rs",
+    "contracts/stream/src/utils.rs",
+    "contracts/stream/src/validate.rs",
+]
+
+exclude_globs = [
+    "contracts/stream/src/test.rs",
+    "contracts/stream/src/events.rs",
+    "contracts/stream/src/storage.rs",
+]
+
+minimum_test_timeout = 60

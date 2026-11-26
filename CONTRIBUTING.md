@@ -21,6 +21,9 @@ Thank you for contributing to PayStream — a Soroban smart contract system for 
 - [Questions & Discussions](#questions--discussions)
 - [Pull Request Process](#pull-request-process)
 - [Changelog](#changelog)
+- [SDK Bindings](#sdk-bindings)
+  - [Regenerating bindings](#regenerating-bindings)
+  - [Drift check in CI](#drift-check-in-ci)
 - [Testing Requirements](#testing-requirements)
   - [Updating Snapshots](#updating-snapshots)
 - [Writing Fuzz Targets](#writing-fuzz-targets)
@@ -487,6 +490,39 @@ When cutting a release, a maintainer renames `[Unreleased]` to `[x.y.z] - YYYY-M
 
 ---
 
+## SDK Bindings
+
+The public contract interface is committed as a machine-readable spec at [`contracts/stream/interface.json`](contracts/stream/interface.json). SDK bindings (TypeScript, Rust, and other client stubs) are **generated** from that spec — never edit generated binding files by hand.
+
+### Regenerating bindings
+
+After any change to the contract's public interface (entry points, argument types, return types, or events), regenerate the bindings and commit the result in the same PR:
+
+```bash
+make bindings        # regenerate SDK bindings from contracts/stream/interface.json
+```
+
+The underlying script is `scripts/check-interface.sh`, which can also be invoked directly:
+
+```bash
+./scripts/check-interface.sh --generate   # regenerate bindings
+./scripts/check-interface.sh --check      # verify committed bindings match the spec
+```
+
+Review the diff before committing. A binding change means the client-facing API changed — update `docs/api-reference.md` and add a `CHANGELOG.md` entry in the same PR.
+
+### Drift check in CI
+
+CI runs `scripts/check-interface.sh --check`, which regenerates the bindings from `contracts/stream/interface.json` and diffs them against the committed files. **If the committed bindings drift from the spec, the build fails.** To fix a failing drift check:
+
+1. Run `make bindings` locally.
+2. Commit the regenerated binding files.
+3. Push — CI will re-run the check.
+
+If `interface.json` itself is out of date relative to the contract source, update the spec first (see `scripts/check-interface.sh` for the extraction step), then regenerate the bindings.
+
+---
+
 ## Testing Requirements
 
 ### Where tests live
@@ -537,15 +573,51 @@ make coverage      # print a per-file coverage summary
 
 Target baseline: **>90% line coverage** for `contracts/stream` and `contracts/token`. New code should not lower coverage.
 
-#### Codecov patch coverage gate (enforced in CI)
+#### Codecov coverage gates (enforced in CI)
 
-A `codecov.yml` file at the repository root configures a **minimum 80% patch coverage** requirement. This means:
+A `codecov.yml` file at the repository root configures two enforced coverage gates. Both are reported as **required status checks** on every PR, and CI fails if either one regresses:
 
-- Every PR must have at least 80% of its **new and changed lines** covered by tests.
-- Codecov will post a status check on each PR. CI fails if the patch coverage falls below 80%.
-- The project-level coverage target is tracked for visibility but is **not** a hard gate (to avoid penalising PRs that touch legacy uncovered code).
+| Gate | Scope | Threshold | Behaviour on regression |
+|---|---|---|---|
+| `project` | Whole repository | **90% line coverage floor** | Fails the PR — coverage may not drop below the floor |
+| `patch` | New and changed lines | **80% patch coverage** | Fails the PR — new code must be tested |
 
-If your PR intentionally adds code that cannot be unit-tested (e.g., event-emission helpers, dead-code stubs, or wasm-only paths), document the gap in the PR description so reviewers can verify the `codecov.yml` ignore list or approve the exception.
+The project gate uses a `target: 90%` with `threshold: 0%`, so any drop below the floor fails the check. The patch gate uses `target: 80%` with a small tolerance for generated or hard-to-test lines.
+
+##### Per-flag targets
+
+Coverage is uploaded with separate flags so each contract is gated independently:
+
+| Flag | Paths | Project target |
+|---|---|---|
+| `stream` | `contracts/stream/` | 90% |
+| `token` | `contracts/token/` | 90% |
+
+Each flag produces its own status check (`codecov/project/stream`, `codecov/project/token`, and the combined `codecov/project`). A regression in either contract fails its flag check, which fails the PR. This keeps a well-covered contract from masking a drop in another.
+
+##### What this means for contributors
+
+- Every PR must keep the **overall project coverage at or above 90%** and have at least **80% of its new and changed lines** covered by tests.
+- Codecov posts the status checks automatically once the `Coverage` workflow finishes. Wait for them to turn green before requesting review.
+- If your PR intentionally adds code that cannot be unit-tested (e.g., event-emission helpers, dead-code stubs, or wasm-only paths), document the gap in the PR description so reviewers can verify the `codecov.yml` ignore list or approve the exception.
+
+##### Verifying coverage locally before pushing
+
+Run the same measurement the CI workflow uses, then check the summary against the floors above:
+
+```bash
+cargo install cargo-llvm-cov   # one-time install
+make coverage                  # per-file summary for the whole workspace
+```
+
+To check a single contract against its flag target:
+
+```bash
+cargo llvm-cov --package paystream-stream --summary-only
+cargo llvm-cov --package paystream-token  --summary-only
+```
+
+If a file you touched shows a lower percentage than before, add tests before opening the PR — the `patch` gate will otherwise fail on the changed lines.
 
 ### Mutation testing
 

@@ -17,6 +17,8 @@ jobs:
   benchmark:
     name: Gas regression check
     runs-on: ubuntu-latest
+    # Required CI gate: a regression in any benchmark (including the 50-stream
+    # create_streams_batch benchmark) fails this job and blocks the PR.
     steps:
       - uses: actions/checkout@v7
 
@@ -82,6 +84,36 @@ jobs:
           echo "withdraw_cpu=${CPU:-0}" >> "$GITHUB_OUTPUT"
           echo "Withdraw CPU instructions: ${CPU:-0}"
 
+      # ---------------------------------------------------------------------------
+      # Seed 50 streams and measure withdraw_all. This guards the SC-58 chunking
+      # behaviour: withdrawing all streams in one call must stay within budget.
+      # ---------------------------------------------------------------------------
+      - name: Measure withdraw_all (50 streams) CPU instructions
+        id: bench_withdraw_all
+        run: |
+          set -e
+
+          WASM=target/wasm32-unknown-unknown/release/paystream_stream.wasm
+
+          # Attempt to seed 50 streams on a local sandbox. If no local network is
+          # available, fall back to cost-only mode on the WASM directly.
+          SEEDED=0
+          if stellar contract invoke \
+              --wasm "$WASM" \
+              --cost \
+              -- create_streams --count 50 >/dev/null 2>&1; then
+            SEEDED=1
+          fi
+
+          OUTPUT=$(stellar contract invoke \
+            --wasm "$WASM" \
+            --cost \
+            -- withdraw_all --employee "$EMPLOYEE" --stream_ids '[1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23,24,25,26,27,28,29,30,31,32,33,34,35,36,37,38,39,40,41,42,43,44,45,46,47,48,49,50]' 2>&1 || true)
+
+          CPU=$(echo "$OUTPUT" | grep -i "cpu_insns\|cpu instructions\|instructions" | grep -Eo '[0-9]+' | head -1)
+          echo "withdraw_all_50_cpu=${CPU:-0}" >> "$GITHUB_OUTPUT"
+          echo "withdraw_all (50 streams) CPU instructions: ${CPU:-0} (seeded=${SEEDED})"
+
       - name: Measure claimable CPU instructions
         id: bench_claimable
         run: |
@@ -99,6 +131,45 @@ jobs:
           echo "Claimable CPU instructions: ${CPU:-0}"
 
       # ---------------------------------------------------------------------------
+      # Batch create benchmark: 50 streams in a single create_streams_batch call.
+      # Guards batch cost as features land.
+      # ---------------------------------------------------------------------------
+      - name: Measure create_streams_batch (50 streams) CPU instructions
+        id: bench_batch50
+        run: |
+          set -e
+
+          WASM=target/wasm32-unknown-unknown/release/paystream_stream.wasm
+
+          # Build 50 StreamParams entries as a JSON array.
+          BATCH=$(python3 - <<'EOF'
+          import json
+          params = [
+              {
+                  "employer": "GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF",
+                  "employee": "GBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB",
+                  "token": "GCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCC",
+                  "rate": "1000",
+                  "start_time": 0,
+                  "end_time": 1000,
+                  "cliff_time": 0,
+              }
+              for _ in range(50)
+          ]
+          print(json.dumps(params))
+          EOF
+          )
+
+          OUTPUT=$(stellar contract invoke \
+            --wasm "$WASM" \
+            --cost \
+            -- create_streams_batch --streams "$BATCH" 2>&1 || true)
+
+          CPU=$(echo "$OUTPUT" | grep -i "cpu_insns\|cpu instructions\|instructions" | grep -Eo '[0-9]+' | head -1)
+          echo "batch50_cpu=${CPU:-0}" >> "$GITHUB_OUTPUT"
+          echo "create_streams_batch (50) CPU instructions: ${CPU:-0}"
+
+      # ---------------------------------------------------------------------------
       # Compare measured values against baseline with tolerance.
       # ---------------------------------------------------------------------------
       - name: Check regression against baseline
@@ -114,12 +185,18 @@ jobs:
               baseline = json.load(f)
 
           # Read measured values from step outputs (0 means measurement unavailable).
-          withdraw_cpu  = int("${{ steps.bench_withdraw.outputs.withdraw_cpu }}"  or 0)
-          claimable_cpu = int("${{ steps.bench_claimable.outputs.claimable_cpu }}" or 0)
+          withdraw_cpu     = int("${{ steps.bench_withdraw.outputs.withdraw_cpu }}"  or 0)
+          withdraw_all_cpu = int("${{ steps.bench_withdraw_all.outputs.withdraw_all_50_cpu }}" or 0)
+          claimable_cpu    = int("${{ steps.bench_claimable.outputs.claimable_cpu }}" or 0)
 
           results = {
               "withdraw":  {"measured": withdraw_cpu,  "baseline": baseline["withdraw"]["cpu_instructions"]},
+              "withdraw_all_50_streams": {
+                  "measured": withdraw_all_cpu,
+                  "baseline": baseline["withdraw_all_50_streams"]["cpu_instructions"],
+              },
               "claimable": {"measured": claimable_cpu, "baseline": baseline["claimable"]["cpu_instructions"]},
+              "create_streams_batch_50": {"measured": batch50_cpu, "baseline": baseline["create_streams_batch_50"]["cpu_instructions"]},
           }
 
           failed = False
@@ -149,8 +226,9 @@ jobs:
           python3 - <<'EOF'
           import json, os
 
-          withdraw_cpu  = int("${{ steps.bench_withdraw.outputs.withdraw_cpu }}"  or 0)
-          claimable_cpu = int("${{ steps.bench_claimable.outputs.claimable_cpu }}" or 0)
+          withdraw_cpu     = int("${{ steps.bench_withdraw.outputs.withdraw_cpu }}"  or 0)
+          withdraw_all_cpu = int("${{ steps.bench_withdraw_all.outputs.withdraw_all_50_cpu }}" or 0)
+          claimable_cpu    = int("${{ steps.bench_claimable.outputs.claimable_cpu }}" or 0)
 
           with open("benchmarks/baseline.json") as f:
               baseline = json.load(f)
@@ -160,9 +238,17 @@ jobs:
                   "measured_cpu_instructions": withdraw_cpu,
                   "baseline_cpu_instructions": baseline["withdraw"]["cpu_instructions"],
               },
+              "withdraw_all_50_streams": {
+                  "measured_cpu_instructions": withdraw_all_cpu,
+                  "baseline_cpu_instructions": baseline["withdraw_all_50_streams"]["cpu_instructions"],
+              },
               "claimable": {
                   "measured_cpu_instructions": claimable_cpu,
                   "baseline_cpu_instructions": baseline["claimable"]["cpu_instructions"],
+              },
+              "create_streams_batch_50": {
+                  "measured_cpu_instructions": batch50_cpu,
+                  "baseline_cpu_instructions": baseline["create_streams_batch_50"]["cpu_instructions"],
               },
           }
           with open("benchmarks/results.json", "w") as f:

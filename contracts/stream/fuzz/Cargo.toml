@@ -4,11 +4,22 @@ version = "0.1.0"
 edition = "2021"
 publish = false
 
+[features]
+# Enables the Kani formal-verification harnesses under `src/kani/`.
+# Build/run with `cargo kani --features kani` (see README.md).
+kani = []
+
 [dependencies]
 paystream-stream = { path = "..", features = ["testutils"] }
 paystream-token = { path = "../../token", features = ["testutils"] }
 proptest = "1"
 soroban-sdk = { version = "29.0.1", features = ["testutils"] }
+
+[dev-dependencies]
+# Kani proof harnesses are compiled as a library target so that
+# `cargo kani` can discover and verify them. The `kani` feature gates
+# the harness module so normal builds are unaffected.
+paystream-stream-kani = { path = "..", optional = true }
 
 [[bin]]
 name = "fuzz_claimable"
@@ -35,5 +46,13 @@ name = "fuzz_batch_cancel"
 path = "src/fuzz_batch_cancel.rs"
 
 [[bin]]
+name = "fuzz_transfer_withdraw_all"
+path = "src/fuzz_transfer_withdraw_all.rs"
+
+[[bin]]
 name = "prop_claimable_invariant"
 path = "src/prop_claimable_invariant.rs"
+
+[[bin]]
+name = "prop_linear_vest_pause_resume"
+path = "src/prop_linear_vest_pause_resume.rs"

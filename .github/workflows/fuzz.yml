@@ -35,8 +35,17 @@ jobs:
       - name: Run proptest fuzz (1 000 000 iterations) — create_stream
         run: cargo test --package paystream-stream-fuzz --bin fuzz_create_stream
 
+      - name: Run proptest fuzz (1 000 000 iterations) — transfer_receipt + withdraw_all
+        run: cargo test --package paystream-stream-fuzz --bin fuzz_transfer_withdraw_all
+
       - name: Run proptest fuzz (500 000 iterations) — admin nonce
         run: cargo test --package paystream-stream-fuzz --bin fuzz_admin_nonce
+
+      - name: Run proptest property — linear vest pause/resume accrual (SC-118)
+        timeout-minutes: 5
+        env:
+          PROPTEST_SEED: "0"
+        run: cargo test --package paystream-stream-fuzz --bin prop_linear_vest_pause_resume
 
   token-fuzz:
     name: Proptest fuzz token (TOK-19)

@@ -45,6 +45,29 @@ To rotate or transfer admin authority:
 4. Verify the new admin on-chain (`get_admin` returns the new multi-sig address).
 5. Confirm the old signers can no longer authorize admin calls.
 
+## Observability and Health Checks
+
+The indexer/API exposes the following endpoints for monitoring:
+
+- **`/healthz`** — liveness probe. Returns `200` while the process is running.
+- **`/readyz`** — readiness probe. Returns `200` only when the indexer is within the acceptable lag behind the chain head **and** the database is reachable; otherwise returns `503` with a reason. Use this endpoint for load-balancer and orchestrator readiness checks.
+- **`/metrics`** — Prometheus metrics endpoint. Exports indexer lag behind chain, event throughput, and error rate.
+
+### Lag Alert
+
+A Prometheus alert fires when indexer lag exceeds the configured threshold (see the alert rules in the OPS monitoring configuration). The alert is wired to OPS monitoring and pages the on-call operator. On firing:
+
+1. Check `/readyz` to confirm whether the indexer is lagging or the DB is unreachable.
+2. Inspect `/metrics` for lag, event throughput, and error-rate trends.
+3. Follow the incident response steps in `docs/security/emergency-drain.md` if the lag is caused by a stalled or failing indexer.
+
+## Admin Audit Trail
+
+All admin and governance actions are indexed for audit: `propose_admin`/`accept_admin`, `pause`/`unpause`, `set_min_deposit`, `set_protocol_fee`, and `upgrade` steps. The admin nonce sequence is reconstructed from these events.
+
+- **Query by admin address** — the audit trail is queryable by admin address so governance tools can review all activity for a given admin.
+- **Unexpected admin action alerts** — alerts fire on unexpected admin actions (e.g. admin changes, pause/unpause, or parameter changes not recorded in the operations log). On firing, cross-check the transaction against the operations log and the multi-sig signing steps above.
+
 ## Verification Checklist
 
 - [ ] Admin address is a 2-of-3 multi-sig (verified on-chain)
@@ -52,3 +75,6 @@ To rotate or transfer admin authority:
 - [ ] Transaction hashes and signers logged
 - [ ] State changes verified on-chain after each admin call
 - [ ] Procedure rehearsed on testnet before mainnet deployment
+- [ ] `/healthz` and `/readyz` return healthy responses
+- [ ] Lag alert configured and routed to OPS monitoring
+- [ ] Admin audit trail queryable by admin address; unexpected-admin-action alerts verified

@@ -3,14 +3,212 @@
   "contract": "stream",
   "functions": [
     {
-      "name": "set_max_deposit",
-      "args": [
+      "name": "create_stream",
+      "description": "Create a vesting stream. Supports linear, milestone, and dynamic rate schedules. The immutable flag makes the stream non-cancellable and non-pausable by the employer while funds remain withdrawable by the employee.",
+      "params": [
+        { "name": "sender", "type": "Address" },
+        { "name": "recipient", "type": "Address" },
+        { "name": "token", "type": "Address" },
+        { "name": "total_amount", "type": "i128" },
+        { "name": "start_time", "type": "u64" },
+        { "name": "cliff_time", "type": "u64" },
+        { "name": "end_time", "type": "u64" },
+        { "name": "immutable", "type": "bool" },
+        { "name": "milestone_schedule", "type": "Vec<(u64, u32)>" },
+        { "name": "rate_schedule", "type": "Vec<(u64, i128)>" }
+      ],
+      "returns": "u64"
+    },
+    {
+      "name": "withdraw_to",
+      "description": "Withdraw claimable tokens for a stream directly to a delegate recipient address. Requires auth from the receipt holder; the holder's claimable amount is decremented and the delegate receives the tokens.",
+      "params": [
+        { "name": "employee", "type": "Address" },
+        { "name": "stream_id", "type": "u64" },
+        { "name": "to", "type": "Address" }
+      ],
+      "returns": "i128"
+    },
+    {
+      "name": "set_rate_schedule",
+      "description": "Set a forward schedule of (timestamp, rate) so rate changes auto-apply at configured times. The schedule must be sorted with no gaps or overlaps.",
+      "params": [
+        { "name": "sender", "type": "Address" },
+        { "name": "stream_id", "type": "u64" },
+        { "name": "rate_schedule", "type": "Vec<(u64, i128)>" }
+      ],
+      "returns": "()"
+    },
+    {
+      "name": "create_split_vest",
+      "description": "Create a linear vest stream whose claimable amount is split among multiple beneficiaries.",
+      "params": [
+        { "name": "sender", "type": "Address" },
+        { "name": "beneficiaries", "type": "Vec<SplitBeneficiary>" },
+        { "name": "token", "type": "Address" },
+        { "name": "total_amount", "type": "i128" },
+        { "name": "start_time", "type": "u64" },
+        { "name": "cliff_time", "type": "u64" },
+        { "name": "end_time", "type": "u64" },
+        { "name": "metadata", "type": "Map<Symbol, String>" }
+      ],
+      "returns": "u64"
+    },
+    {
+      "name": "update_stream_metadata",
+      "description": "Update the bounded structured metadata map for a stream.",
+      "params": [
+        { "name": "caller", "type": "Address" },
+        { "name": "stream_id", "type": "u64" },
+        { "name": "metadata", "type": "Map<Symbol, String>" }
+      ],
+      "returns": "()"
+    },
+    {
+      "name": "set_token_allowed",
+      "params": [
+        {
+          "name": "admin",
+          "type": "Address"
+        },
+        {
+          "name": "nonce",
+          "type": "u64"
+        },
+        {
+          "name": "token",
+          "type": "Address"
+        },
+        {
+          "name": "allowed",
+          "type": "bool"
+        }
+      ],
+      "returns": "()"
+    },
+    {
+      "name": "get_token_allowlist",
+      "params": [],
+      "returns": "Vec<Address>"
+    },
+    {
+      "name": "is_token_allowed",
+      "params": [
+        {
+          "name": "token",
+          "type": "Address"
+        }
+      ],
+      "returns": "bool"
+    },
+    {
+      "name": "get_stream_metadata",
+      "description": "Query the structured metadata map for a stream.",
+      "params": [
+        { "name": "stream_id", "type": "u64" }
+      ],
+      "returns": "Map<Symbol, String>"
+    },
+    {
+      "name": "set_max_batch_size",
+      "description": "Admin-configurable maximum batch size, bounded to 1..=200. Default is 50.",
+      "params": [
         { "name": "admin", "type": "Address" },
         { "name": "nonce", "type": "u64" },
-        { "name": "amount", "type": "i128" }
+        { "name": "max", "type": "u32" }
       ],
-      "returns": "void"
+      "returns": "()"
+    },
+    {
+      "name": "update_stop_time_batch",
+      "description": "Batched variant of update_stop_time for employers managing many streams. Accepts 1..=50 updates, applies update_stop_time validation per stream, and is all-or-nothing.",
+      "params": [
+        { "name": "employer", "type": "Address" },
+        { "name": "updates", "type": "Vec<(u64, u64)>" }
+      ],
+      "returns": "()"
+    },
+    {
+      "name": "get_min_deposit",
+      "description": "Read-only query returning the configured minimum deposit amount.",
+      "params": [],
+      "returns": "i128"
+    },
+    {
+      "name": "get_paused",
+      "description": "Read-only query returning whether the contract is paused.",
+      "params": [],
+      "returns": "bool"
+    },
+    {
+      "name": "get_admin",
+      "description": "Read-only query returning the current admin address.",
+      "params": [],
+      "returns": "Address"
+    },
+    {
+      "name": "get_pending_admin",
+      "description": "Read-only query returning the pending admin address, if any.",
+      "params": [],
+      "returns": "Option<Address>"
     }
   ],
-  "events": []
+  "events": [
+    {
+      "name": "withdraw_to",
+      "description": "Emitted when a receipt holder withdraws claimable tokens to a delegate recipient.",
+      "fields": [
+        { "name": "stream_id", "type": "u64" },
+        { "name": "employee", "type": "Address" },
+        { "name": "to", "type": "Address" },
+        { "name": "amount", "type": "i128" }
+      ]
+    },
+    {
+      "name": "rate_schedule_set",
+      "description": "Emitted when a dynamic rate schedule is configured for a stream.",
+      "fields": [
+        { "name": "stream_id", "type": "u64" },
+        { "name": "rate_schedule", "type": "Vec<(u64, i128)>" }
+      ]
+    },
+    {
+      "name": "milestone_schedule_set",
+      "description": "Emitted when a milestone vesting schedule is configured for a stream.",
+      "fields": [
+        { "name": "stream_id", "type": "u64" },
+        { "name": "milestone_schedule", "type": "Vec<(u64, u32)>" }
+      ]
+    },
+    {
+      "name": "stream_immutable",
+      "description": "Emitted when a stream is created with the immutable flag set.",
+      "fields": [
+        { "name": "stream_id", "type": "u64" }
+      ]
+    },
+    {
+      "name": "stream_metadata_updated",
+      "description": "Emitted when a stream's structured metadata map is updated.",
+      "fields": [
+        { "name": "stream_id", "type": "u64" },
+        { "name": "metadata", "type": "Map<Symbol, String>" }
+      ]
+    },
+    {
+      "name": "max_batch_size_updated",
+      "description": "Emitted when the admin-configurable max batch size is changed.",
+      "fields": [
+        { "name": "max", "type": "u32" }
+      ]
+    },
+    {
+      "name": "stream_cancelled",
+      "description": "Emitted when a stream is cancelled, including the proportional protocol fee refunded to the employer.",
+      "fields": [
+        { "name": "stream_id", "type": "u64" },
+        { "name": "fee_refund", "type": "i128" }
+      ]
+    }
+  ]
 }

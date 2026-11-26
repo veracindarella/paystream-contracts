@@ -160,30 +160,69 @@ jobs:
 
           echo "Contract interface matches committed baseline."
 
+      - name: Check SDK bindings drift
+        run: |
+          WASM=target/wasm32-unknown-unknown/release/paystream_stream.wasm
+          if [ ! -f "$WASM" ]; then
+            echo "::error::Compiled WASM not found at $WASM"
+            exit 1
+          fi
+          if [ ! -x scripts/check-interface.sh ]; then
+            echo "::error::scripts/check-interface.sh is missing or not executable"
+            exit 1
+          fi
+
+          if ! scripts/check-interface.sh; then
+            {
+              echo "### ❌ SDK bindings out of date"
+              echo ""
+              echo "The committed SDK bindings do not match \`contracts/stream/interface.json\`."
+              echo "Regenerate them and commit the result:"
+              echo ""
+              echo '```'
+              echo "scripts/check-interface.sh --update"
+              echo '```'
+              echo ""
+              echo "See CONTRIBUTING.md for details."
+            } >> "$GITHUB_STEP_SUMMARY"
+            echo "::error::SDK bindings drifted from interface.json; see CONTRIBUTING.md"
+            exit 1
+          fi
+
+          echo "SDK bindings match interface.json."
+=======
+
       - name: Upload WASM artifacts
         uses: actions/upload-artifact@v7
         with:
           name: wasm-contracts
           path: target/wasm32-unknown-unknown/release/*.wasm
 
+  dashboard:
+    name: Dashboard CI
+    uses: ./.github/workflows/dashboard-ci.yml
+    secrets: inherit
+
   scheduled-summary:
     name: Scheduled CI summary
     if: ${{ always() && github.event_name == 'schedule' }}
-    needs: [test, build-wasm]
+    needs: [test, build-wasm, dashboard]
     runs-on: ubuntu-latest
     steps:
       - name: Report scheduled results
         env:
           TEST_RESULT: ${{ needs.test.result }}
           WASM_RESULT: ${{ needs.build-wasm.result }}
+          DASHBOARD_RESULT: ${{ needs.dashboard.result }}
         run: |
           {
             echo "## Weekly scheduled CI"
             echo ""
             echo "- Toolchain matrix: $TEST_RESULT"
             echo "- WASM build: $WASM_RESULT"
+            echo "- Dashboard: $DASHBOARD_RESULT"
           } >> "$GITHUB_STEP_SUMMARY"
-          if [[ "$TEST_RESULT" == "failure" || "$WASM_RESULT" == "failure" ]]; then
+          if [[ "$TEST_RESULT" == "failure" || "$WASM_RESULT" == "failure" || "$DASHBOARD_RESULT" == "failure" ]]; then
             echo "A scheduled CI job failed. Review the failed job logs above."
           else
             echo "Scheduled CI completed without blocking failures."

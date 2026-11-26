@@ -124,6 +124,42 @@ placeholders until the launch.
 Deep links to [Stellar Expert](https://stellar.expert) for each contract are
 added in [docs/api-reference.md](api-reference.md) once the IDs are known.
 
+### Network configuration
+
+The dashboard and indexer select the network via environment variables — no
+code changes are required to switch between testnet and mainnet. See
+[docs/networks.md](networks.md) for the full switching guide.
+
+| Setting | Mainnet value |
+|---------|---------------|
+| Network passphrase | `Public Global Stellar Network ; September 2015` |
+| Soroban RPC URL | `https://soroban-mainnet.stellar.org` |
+| Token contract ID | `<pending>` (set `NEXT_PUBLIC_TOKEN_CONTRACT_ID` / `TOKEN_CONTRACT_ID`) |
+| Stream contract ID | `<pending>` (set `NEXT_PUBLIC_STREAM_CONTRACT_ID` / `STREAM_CONTRACT_ID`) |
+
+To run the stack against mainnet:
+
+```bash
+# Dashboard
+NEXT_PUBLIC_NETWORK=mainnet \
+NEXT_PUBLIC_SOROBAN_RPC_URL=https://soroban-mainnet.stellar.org \
+NEXT_PUBLIC_TOKEN_CONTRACT_ID=<mainnet token id> \
+NEXT_PUBLIC_STREAM_CONTRACT_ID=<mainnet stream id> \
+npm run dev
+
+# Indexer / API
+NETWORK=mainnet \
+SOROBAN_RPC_URL=https://soroban-mainnet.stellar.org \
+TOKEN_CONTRACT_ID=<mainnet token id> \
+STREAM_CONTRACT_ID=<mainnet stream id> \
+npm run start
+```
+
+On startup the indexer and API validate the configured passphrase against the
+selected network and refuse to start on a mismatch. Contract IDs are also
+validated against the network (format and expected network) and startup fails
+if they do not match.
+
 ---
 
 ## 6. Testnet vs. mainnet differences observed

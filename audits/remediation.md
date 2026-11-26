@@ -96,3 +96,30 @@ for the full scope, acceptance criteria, and auditor candidates.
 **Status:** Engagement confirmed — see [2026-next-audit-scope.md](2026-next-audit-scope.md).
 
 When the audit completes, add a new section here following the format above.
+
+---
+
+## Planned: v0.2 Mainnet-Readiness Audit (SEC-36)
+
+Roadmap v0.2 requires an independent external audit before mainnet launch. This engagement
+supersedes and extends the SEC-22 delta audit.
+
+**Scope:** Both contracts in the repository — `contracts/stream` and `contracts/token` —
+including all changes since the 2026-04-23 Trail of Bits engagement. Full scope and
+acceptance criteria are tracked in [2026-next-audit-scope.md](2026-next-audit-scope.md).
+
+**Findings tracking:** Every audit finding will be filed as a GitHub issue labeled with its
+severity (`critical`, `high`, `medium`, `low`, `info`) and linked back to SEC-36. Findings
+and their remediation status will be summarized in this document using the same table
+format as the Trail of Bits section above.
+
+**Report publication:** The final audit report will be published under `audits/` (e.g.
+`audits/2026-XX-<auditor>.md`) and linked from this document.
+
+**Remediation gate:** All Critical and High remediation issues must be closed and verified
+before mainnet deployment. Medium/Low findings must be resolved or explicitly accepted with
+documented rationale.
+
+**Status:** Auditor scoped and engaged — see [2026-next-audit-scope.md](2026-next-audit-scope.md).
+Mainnet remains blocked until this audit completes and all Critical/High remediation issues
+are closed.

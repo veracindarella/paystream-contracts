@@ -11,10 +11,13 @@ team members before launch (see [Approvals](#approvals)).
 
 ## 1. Security
 
-- [ ] **Audit completion**
+- [ ] **Audit completion (SEC-36: v0.2 external audit)**
   - Owner: ______
-  - Completion criteria: final audit report received; all Critical/High
-    findings fixed and re-verified by the auditor; Medium/Low findings fixed
+  - Completion criteria: independent external audit of both contracts
+    (stream and token) scoped and completed for v0.2 mainnet readiness;
+    final audit report published under `audits/`; every finding tracked as
+    an issue labeled with its severity; all Critical/High remediation
+    issues closed and re-verified by the auditor; Medium/Low findings fixed
     or documented as accepted risk; report linked from `SECURITY.md`.
 - [ ] **LOW-02 resolution (re-initialization guard)**
   - Owner: ______

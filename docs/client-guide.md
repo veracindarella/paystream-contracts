@@ -1,8 +1,37 @@
 # Client Guide (JavaScript / TypeScript)
 
+> **Prefer the typed SDK.** Most integrators should use the generated `@paystream/sdk` package instead of hand-rolling ScVal arguments. It is generated from `contracts/stream/interface.json`, exposes every stream and token entrypoint with typed arguments and return values, and includes paginated read helpers. See [sdk/README.md](../sdk/README.md) for installation, usage, and a runnable example. The low-level recipe below is kept for advanced use cases (custom transaction assembly, wallet integrations, or debugging).
+
 How to call the PayStream stream contract from a frontend or Node.js script with [`@stellar/stellar-sdk`](https://github.com/stellar/js-stellar-sdk). Full parameter and error documentation lives in [api-reference.md](api-reference.md).
 
-## Setup
+## Using the typed SDK (recommended)
+
+```bash
+npm install @paystream/sdk @stellar/stellar-sdk
+```
+
+```ts
+import { PayStreamClient } from "@paystream/sdk";
+
+const client = PayStreamClient.fromEnv(); // reads STREAM_CONTRACT_ID, RPC_URL, etc.
+
+// Typed args — no manual ScVal encoding.
+const streamId = await client.createStream(employerSigner, {
+  employee: "G...",
+  token: TOKEN_CONTRACT_ID,
+  deposit: 1_000_0000000n,
+  ratePerSecond: 10_000n,
+  stopTime: 0n,
+});
+
+// Paginated read helpers.
+const page = await client.streamsByEmployer(employerAddress, { cursor: null, limit: 50 });
+const claimable = await client.claimableBatch([streamId, 13n]);
+```
+
+The SDK validates its generated bindings against `contracts/stream/interface.json` at build time, so any contract interface change that is not reflected in the SDK fails CI. See [sdk/README.md](../sdk/README.md) for the full API surface, pagination semantics, and the example under `sdk/examples/`.
+
+## Setup (low-level)
 
 ```bash
 npm install @stellar/stellar-sdk
@@ -424,6 +453,15 @@ const employeeStreamIds: bigint[] = await read(
   addr(employee.publicKey()),
 );
 ```
+
+## Pagination
+
+The SDK's `streamsByEmployer` and `claimableBatch` helpers page through results so callers never have to assemble large argument lists by hand:
+
+- `streamsByEmployer(employer, { cursor, limit })` returns `{ items, nextCursor }`. Pass `nextCursor` back in to fetch the next page; `nextCursor === null` means there are no more results.
+- `claimableBatch(streamIds, { chunkSize })` splits an arbitrarily large list of stream ids into contract-sized batches, aggregates the `[streamId, amount]` pairs, and returns them in input order.
+
+If you are calling the contract directly, replicate this by chunking `stream_ids_by_employer` results and `claimable_batch` inputs to the limits documented in [api-reference.md](api-reference.md).
 
 ## Error handling
 

@@ -7,7 +7,13 @@ PayStream uses Soroban's native WASM upgrade mechanism. The contract address nev
 1. **Build** the new contract version
 2. **Upload** the new WASM to the ledger (produces a WASM hash)
 3. **Call `upgrade`** on the deployed contract with the new WASM hash (admin only)
-4. **Call `migrate`** if the new version requires data-model changes (admin only, no-op in base version)
+4. **Call `migrate`** if the new version requires data-model changes (admin only; idempotent, version-gated, and bounded per call — see below)
+
+> **Admin runbook:** for the concrete, copy-paste timelock flow
+> (propose → wait → execute → migrate → verify), see
+> [`docs/upgrade-runbook.md`](upgrade-runbook.md). That runbook is the
+> authoritative procedure for production upgrades; the steps below are a
+> condensed overview.
 
 ## Step-by-step
 
@@ -49,6 +55,39 @@ stellar contract invoke \
   --admin <ADMIN_ADDRESS>
 ```
 
+#### What `migrate` does
+
+- **Stamps the event version.** On `initialize` and on `migrate`, the contract sets the
+  `contract_event_version` instance value. Indexers read this value to detect the event
+  schema in use without resyncing; see [`docs/events-schema.md`](events-schema.md).
+- **Backfills indexes for legacy streams.** Streams created before the new indexes
+  (SC-88, SC-53) were added have no index entries. `migrate` walks existing `Stream`
+  records and writes the missing index entries.
+- **Version-gated.** The migration is recorded in instance storage. Once the stored
+  migration version matches the contract's current version, further calls are a no-op,
+  so it is safe to call `migrate` at any time (including twice in a row).
+- **Bounded per call.** Each invocation processes a bounded batch of legacy streams and
+  emits a progress event so operators can track completion. If there are more legacy
+  streams than fit in one batch, call `migrate` again until the progress event reports
+  that the backfill is complete.
+
+#### Running it repeatedly
+
+```bash
+# Repeat until the progress event reports completion (or the call becomes a no-op)
+for i in $(seq 1 20); do
+  stellar contract invoke \
+    --id <STREAM_CONTRACT_ID> \
+    --source-account <ADMIN_IDENTITY> \
+    --network testnet \
+    -- migrate \
+    --admin <ADMIN_ADDRESS>
+done
+```
+
+Because the step is idempotent and version-gated, re-running it after completion is
+harmless and produces no additional storage writes.
+
 ## Storage compatibility
 
 Soroban's upgrade replaces only the WASM bytecode. All `persistent` and `instance` storage entries remain intact. When adding new storage keys in an upgrade:
@@ -56,6 +95,10 @@ Soroban's upgrade replaces only the WASM bytecode. All `persistent` and `instanc
 - New keys with `unwrap_or` defaults are safe — they return the default until explicitly set
 - Renamed or removed keys require a `migrate` implementation to transform existing data
 - The `DataKey` enum is `#[contracttype]` — adding new variants is backward-compatible
+- New indexes over existing data must be backfilled by `migrate`; the version gate ensures
+  the backfill runs once and the bounded batches keep each call within resource limits
+- `contract_event_version` is an instance value set on `initialize`/`migrate`; it does not
+  change event payloads, so current consumers see no behavior change
 
 ## Security
 
@@ -95,11 +138,20 @@ stellar contract invoke --id <TOKEN_CONTRACT_ID> --source admin --network testne
 # Confirm the new WASM is operational (no-op hook, admin only)
 stellar contract invoke --id <TOKEN_CONTRACT_ID> --source admin --network testnet \
   -- migrate --admin <ADMIN_ADDRESS>
+
+# Verify the deployment: nonce advanced and admin unchanged
+stellar contract invoke --id <TOKEN_CONTRACT_ID> --source admin --network testnet -- admin_nonce
+stellar contract invoke --id <TOKEN_CONTRACT_ID> --source admin --network testnet -- get_admin
 ```
 
 - `upgrade` requires the stored admin's auth and consumes the admin nonce shared with `mint`.
+  Always read the nonce immediately before proposing/executing the upgrade and pass that
+  exact value — a stale nonce causes the upgrade to fail.
 - Never reorder or remove `TokenDataKey` variants; only append new ones.
 - Verify with `cargo test -p paystream-token --features wasm-tests` (requires the release WASM build).
+- The propose → wait → execute → migrate → verify flow and the verify-deploy checklist
+  are the same as for the stream contract; see
+  [`docs/upgrade-runbook.md`](upgrade-runbook.md). Rollback is covered there too (OPS-51).
 
 ## Soroban SDK Upgrades
 

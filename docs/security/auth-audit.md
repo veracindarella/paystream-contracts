@@ -137,9 +137,107 @@ check in the same function scope.
 
 ---
 
+## API Authentication & Audit Model (BE-7)
+
+The public HTTP API in front of the contract has its own auth layer, separate from
+Soroban `require_auth()`. This section documents the API-key lifecycle, which
+endpoints require a key, anonymous throttling, and the audit log for key usage.
+
+### API key lifecycle
+
+| Stage | Behaviour |
+|---|---|
+| **Issue** | Keys are minted by an admin-only endpoint (`POST /v1/api-keys`). The server generates a random secret (≥ 32 bytes, CSPRNG), returns the plaintext **once**, and stores only a hash (SHA-256) plus metadata: `key_id`, `label`, `scopes`, `created_at`, `created_by`, `expires_at` (optional), `revoked_at` (null while active). |
+| **Use** | Clients send `Authorization: Bearer <key>`. The server hashes the presented secret, looks up the active record by hash, and rejects unknown, expired, or revoked keys with `401 Unauthorized`. |
+| **Rotate** | Issue a new key, migrate the client, then revoke the old one. Overlapping validity is allowed; keys are independent. |
+| **Revoke** | `DELETE /v1/api-keys/{key_id}` (admin-only) sets `revoked_at`. Revocation is effective immediately — the lookup rejects revoked keys on the next request. Revocation is idempotent and never deletes the audit trail. |
+| **Expire** | Keys with `expires_at` in the past are treated as revoked; no background job is required for enforcement. |
+
+Scopes are coarse-grained: `read`, `write`, `subscribe`. A key may hold any subset;
+a request requiring a scope the key lacks is rejected with `403 Forbidden`.
+
+### Endpoint auth requirements
+
+| Endpoint class | Examples | Auth | Throttle |
+|---|---|---|---|
+| **Write** | `POST /v1/streams`, `POST /v1/streams/{id}/top-up`, `POST /v1/streams/{id}/cancel`, `POST /v1/templates` | API key with `write` scope | Per-key token bucket |
+| **Subscribe** | `POST /v1/subscriptions`, `DELETE /v1/subscriptions/{id}`, webhook registration | API key with `subscribe` scope | Per-key token bucket |
+| **Key management** | `POST /v1/api-keys`, `DELETE /v1/api-keys/{id}` | Admin credential (not a normal API key) | Per-IP token bucket |
+| **Anonymous read** | `GET /v1/streams/{id}`, `GET /v1/streams?employer=…`, `GET /v1/streams/{id}/claimable` | None | Per-IP token bucket (stricter) |
+
+Anonymous reads are allowed so public dashboards and explorers keep working, but they
+are throttled more aggressively than keyed reads. Keyed reads (a key with `read`
+scope) get the per-key bucket.
+
+### Rate limiting
+
+Token-bucket limiter, one bucket per API key (keyed by `key_id`) and one per client IP
+for anonymous traffic. Bucket parameters are configurable per deployment; defaults:
+
+| Class | Capacity | Refill |
+|---|---|---|
+| Keyed write/subscribe | 60 requests | 1 req/s |
+| Keyed read | 300 requests | 5 req/s |
+| Anonymous read (per IP) | 30 requests | 0.5 req/s |
+
+When a bucket is empty the API returns:
+
+```
+HTTP/1.1 429 Too Many Requests
+Retry-After: <seconds until next token>
+X-RateLimit-Limit: <capacity>
+X-RateLimit-Remaining: 0
+X-RateLimit-Reset: <unix seconds>
+```
+
+`Retry-After` is computed from the bucket refill rate (ceil of the time to the next
+token) and is always ≥ 1. Rate-limit state is in-memory per instance; multi-instance
+deployments must use a shared store (e.g. Redis) so limits are enforced globally.
+
+### Audit log for key usage
+
+Every authenticated request (and every rejected auth attempt) appends one record to
+the append-only audit log. Records are written before the response is sent; a failed
+audit write fails the request closed (`503`) rather than allowing unaudited access.
+
+Schema (one JSON object per line, or one row per record in the audit table):
+
+| Field | Type | Description |
+|---|---|---|
+| `ts` | RFC 3339 timestamp | When the request was processed |
+| `request_id` | string (UUID) | Correlates with response header `X-Request-Id` |
+| `key_id` | string \| null | Key identifier; `null` for anonymous requests |
+| `key_label` | string \| null | Human label at time of use (denormalized) |
+| `outcome` | enum | `allowed`, `denied_scope`, `denied_revoked`, `denied_expired`, `denied_unknown`, `rate_limited` |
+| `method` | string | HTTP method |
+| `path` | string | Request path (query string redacted of secrets) |
+| `status` | integer | HTTP status returned |
+| `ip` | string | Client IP (from trusted proxy header) |
+| `user_agent` | string \| null | Truncated to 256 chars |
+| `latency_ms` | integer | Server processing time |
+
+The plaintext key secret is **never** logged — only `key_id`. Request bodies are not
+logged.
+
+**Retention:** audit records are retained for **90 days** by default (configurable via
+`AUDIT_RETENTION_DAYS`), then purged by a scheduled job. Records are immutable for
+their retention window; revocation of a key does not delete its history. Aggregated
+counters (requests per key per day) may be retained longer for abuse analysis.
+
+### Relationship to contract auth
+
+API-key auth gates *who may submit* a request to the backend. It does not replace
+Soroban auth: the backend still builds transactions that the end user's Stellar
+keypair must sign, and the contract's `require_auth()` checks remain the source of
+truth for on-chain authorization. A compromised API key can submit requests but
+cannot move funds without the corresponding Stellar signatures.
+
+---
+
 ## References
 
 - Issue: #263 (SEC-25)
+- Issue: #408 (BE-7 — API authentication and rate limiting)
 - Related: `.github/codeql/queries/MissingRequireAuth.ql`
 - Related: `.github/codeql/queries/StorageMutationWithoutAuth.ql`
 - Soroban auth model: https://developers.stellar.org/docs/build/smart-contracts/example-contracts/auth

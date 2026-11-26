@@ -29,6 +29,56 @@ receipt holder and the unearned remainder is refunded to the employer.
 
 Receipts carry no metadata on-chain; indexers derive it from `get_stream`.
 
+## Receipts on split streams
+
+A split stream has one receipt and one or more beneficiaries (see
+`docs/split-streams.md`). `transfer_receipt` moves **withdraw rights only**; it
+does not change the split configuration.
+
+| Action | Behaviour on a split stream |
+|---|---|
+| `transfer_receipt(from, to, stream_id)` | `to` becomes the receipt holder and the only address allowed to call `withdraw` (E016 otherwise). The beneficiary list, shares and `stream.employee` are untouched. |
+| `withdraw(stream_id, amount)` by the new holder | The withdrawn amount is distributed to the beneficiaries according to their configured shares, exactly as before the transfer. The holder does not receive the funds directly unless it is also a beneficiary. |
+| `withdraw_all` by the new holder | Same as above for every stream whose receipt the caller holds; split streams are included and still pay out to their beneficiaries. |
+| `cancel_stream` / `cancel_streams_batch` | Accrued earnings are distributed to the beneficiaries per their shares; the unearned remainder is refunded to the employer. |
+
+Guarantees:
+
+- **Split is always honored.** Every withdraw path routes funds through the
+  split distribution; transferring the receipt cannot bypass, dilute or
+  redirect a beneficiary's share.
+- **No silent disenfranchisement.** A transfer cannot remove, replace or
+  reweight beneficiaries — only the employer's split-management controls can
+  change the split, and those are unaffected by receipt transfers. A
+  beneficiary's entitlement is derived from the split configuration, not from
+  who holds the receipt.
+- **Employer controls unaffected.** Pause, resume, cancel, top-up and rate
+  updates remain with the employer and behave identically after a transfer.
+- **Auditability.** `stream.employee` and the beneficiary list keep the
+  original values; `receipt_owner(stream_id)` reports the current holder, so
+  indexers and support staff can see when the holder differs from the
+  beneficiaries.
+
+### Example flow
+
+1. Employer creates a split stream for `employee` with beneficiaries
+   `alice` (60%) and `bob` (40%). The receipt is minted to `employee`.
+2. `employee` calls `transfer_receipt(employee, carol, stream_id)`. `carol`
+   is now the receipt holder; `alice` and `bob` remain beneficiaries with
+   60% / 40% shares.
+3. `carol` calls `withdraw(stream_id, amount)`. The call succeeds because
+   `carol` holds the receipt, and `amount` is split 60% to `alice` and 40% to
+   `bob`. `carol` receives nothing unless `carol` is also a beneficiary.
+4. `alice` (a beneficiary but not the holder) calls `withdraw` and receives
+   E016 — only the receipt holder may trigger a withdrawal. Her share is not
+   lost; it is paid the next time the holder withdraws.
+5. The employer pauses or cancels the stream as usual; accrued earnings are
+   still distributed to `alice` and `bob` per their shares.
+
+Integrators should display `receipt_owner(stream_id)` alongside the
+beneficiary list so that a holder who is not a beneficiary is visible to
+support staff and to the beneficiaries themselves.
+
 ## Legal and compliance considerations
 
 > **Disclaimer:** This section is guidance for integrators, not legal advice.

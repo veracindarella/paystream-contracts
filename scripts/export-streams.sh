@@ -155,12 +155,36 @@ invoke() {
 }
 
 # ---------------------------------------------------------------------------
-# Step 1 — the employer's stream IDs
+# Step 1 — the employer's stream IDs, paginated
 # ---------------------------------------------------------------------------
+# Uses the paginated streams_by_employer_page query so large employers do not
+# exhaust instruction limits. Pages are read until an empty page is returned.
 log "reading streams for employer $EMPLOYER on $NETWORK..."
-IDS_JSON=$(invoke streams_by_employer --employer "$EMPLOYER") || fail "could not read the employer's streams"
+STREAM_IDS=()
+cursor=""
+page=1
+while :; do
+    if [[ -z "$cursor" ]]; then
+        page_json=$(invoke streams_by_employer_page \
+            --employer "$EMPLOYER" --start_after null --limit "$PAGE_SIZE") ||
+            fail "could not read the employer's streams"
+    else
+        page_json=$(invoke streams_by_employer_page \
+            --employer "$EMPLOYER" --start_after "$cursor" --limit "$PAGE_SIZE") ||
+            fail "could not read the employer's streams"
+    fi
 
-mapfile -t STREAM_IDS < <(printf '%s' "$IDS_JSON" | jq -r 'if type == "array" then .[] else . end | tostring')
+    mapfile -t page_ids < <(printf '%s' "$page_json" | jq -r 'if type == "array" then .[] else . end | tostring')
+
+    if [[ ${#page_ids[@]} -eq 0 ]]; then
+        break
+    fi
+
+    log "read page $page (${#page_ids[@]} stream ID(s))..."
+    STREAM_IDS+=("${page_ids[@]}")
+    cursor="${page_ids[-1]}"
+    page=$((page + 1))
+done
 
 if [[ ${#STREAM_IDS[@]} -eq 0 ]]; then
     log "the employer has no streams"
@@ -178,7 +202,7 @@ while [[ $index -lt $total ]]; do
     chunk=("${STREAM_IDS[@]:index:PAGE_SIZE}")
     ids_json=$(printf '%s\n' "${chunk[@]}" | jq -R 'tonumber' | jq -s '.')
 
-    log "fetching page $page (${#chunk[@]} stream(s))..."
+    log "fetching batch $page (${#chunk[@]} stream(s))..."
 
     if streams_json=$(invoke get_streams_batch --stream_ids "$ids_json" 2>/dev/null) &&
         claimable_json=$(invoke claimable_batch --stream_ids "$ids_json" 2>/dev/null); then

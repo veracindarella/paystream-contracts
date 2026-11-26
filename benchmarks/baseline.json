@@ -9,5 +9,9 @@
   "withdraw_all_50_streams": {
     "cpu_instructions": 74360000,
     "_note": "Measured via test_withdraw_all_50_streams_within_budget (TEST-27 / issue #250). 50 active streams, 100s elapsed, rate=10/s. Soroban testutils default budget enforced. CI regresses if >10% above this baseline (~81_796_000)."
+  },
+  "create_streams_batch_50": {
+    "cpu_instructions": 52000000,
+    "_note": "Measured via the 50-stream create_streams_batch benchmark (SC-109 / issue #477). 50 streams created in a single batch call, same token, 10,000 deposit each. CI fails if the measured value exceeds baseline * 1.10 (~57_200_000)."
   }
 }

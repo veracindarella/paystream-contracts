@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 
-use soroban_sdk::{contracttype, Address};
+use soroban_sdk::{contracttype, Address, Map, Symbol};
 
 /// Status of a salary stream.
 #[contracttype]
@@ -16,6 +16,49 @@ pub enum StreamStatus {
     Exhausted,
 }
 
+/// Standard, advisory set of reasons for cancelling a stream.
+///
+/// `cancel_stream` accepts an optional `Symbol` reason. This enum defines the
+/// canonical set of reasons so that off-chain reporting stays consistent.
+///
+/// **Advisory only:** the contract performs no on-chain enforcement or
+/// validation of the reason. Callers may pass any `Symbol`; using one of the
+/// `to_symbol` values below is recommended for consistency.
+///
+/// | Variant      | Symbol       | Meaning                                        |
+/// |--------------|--------------|------------------------------------------------|
+/// | `RoleEnded`  | `role_end`   | Employee's role/engagement ended               |
+/// | `Dispute`    | `dispute`    | Stream cancelled due to a dispute              |
+/// | `Error`      | `error`      | Stream created or configured in error          |
+/// | `Other`      | `other`      | Any other reason not covered above             |
+///
+/// This is a plain enum (not `#[contracttype]`) because it is never stored
+/// on-chain; it only documents the recommended `Symbol` values.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum CancelReason {
+    /// Employee's role or engagement ended.
+    RoleEnded,
+    /// Stream cancelled due to a dispute.
+    Dispute,
+    /// Stream created or configured in error.
+    Error,
+    /// Any other reason not covered by the standard set.
+    Other,
+}
+
+impl CancelReason {
+    /// Maps the reason to its short, canonical `Symbol` for use with
+    /// `cancel_stream`. These values are advisory and not enforced on-chain.
+    pub fn to_symbol(self) -> soroban_sdk::Symbol {
+        match self {
+            CancelReason::RoleEnded => soroban_sdk::Symbol::short("role_end"),
+            CancelReason::Dispute => soroban_sdk::Symbol::short("dispute"),
+            CancelReason::Error => soroban_sdk::Symbol::short("error"),
+            CancelReason::Other => soroban_sdk::Symbol::short("other"),
+        }
+    }
+}
+
 /// Determines how a stream's grant becomes claimable.
 #[contracttype]
 #[derive(Clone, Debug, PartialEq)]
@@ -24,6 +67,8 @@ pub enum StreamType {
     Payroll,
     /// A fixed grant becomes claimable linearly over a vesting period.
     LinearVest,
+    /// A fixed grant becomes claimable in discrete milestones over time.
+    Milestone,
 }
 
 /// A salary stream: employer deposits funds, employee withdraws per-second.
@@ -60,6 +105,43 @@ pub struct Stream {
     pub low_balance_threshold: i128,
     /// Optional reason for pausing the stream (regulatory compliance and dispute resolution).
     pub pause_reason: Option<soroban_sdk::String>,
+    /// Whether the stream is immutable (non-cancellable, non-pausable by the
+    /// employer). Funds remain withdrawable by the employee. See #445.
+    pub immutable: bool,
+}
+
+/// Lightweight projection of a stream for indexers polling many streams.
+///
+/// Contains only the fields needed to display status and balances, avoiding
+/// the cost of returning the full [`Stream`] struct. See #424.
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub struct StreamSummary {
+    /// Unique sequential stream identifier.
+    pub id: u64,
+    /// Current lifecycle state.
+    pub status: StreamStatus,
+    /// Tokens currently claimable by the employee.
+    pub claimable: i128,
+    /// Tokens still remaining in the stream's deposit.
+    pub remaining: i128,
+    /// Payroll rate in tokens per second; zero for linear vest streams.
+    pub rate: i128,
+}
+
+/// Cold (rarely-read) stream fields relocated out of the hot `Stream` entry
+/// per ADR-004 to reduce per-stream rent.
+///
+/// The hot `Stream` struct keeps these fields for backward-compatible decode of
+/// legacy persisted streams; new writes store the authoritative values here
+/// under `DataKey::StreamCold(stream_id)` while the hot entry carries defaults.
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub struct StreamColdData {
+    /// Remaining-deposit threshold for low-balance events; 0 disables them.
+    pub low_balance_threshold: i128,
+    /// Optional reason for pausing the stream (regulatory compliance and dispute resolution).
+    pub pause_reason: Option<soroban_sdk::String>,
 }
 
 /// Vesting terms stored separately so existing persisted `Stream` values remain decodable.
@@ -72,6 +154,50 @@ pub struct LinearVestSchedule {
     pub vest_period: u64,
     /// Optional duration before accrued vesting becomes claimable.
     pub cliff: Option<u64>,
+}
+
+/// A single milestone in a milestone-based vesting schedule (#446).
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub struct Milestone {
+    /// Ledger timestamp at which this milestone vests.
+    pub timestamp: u64,
+    /// Fraction of the grant that vests at this milestone, in basis points
+    /// (10000 = 100%). Fractions across all milestones must sum to 10000.
+    pub fraction_bps: u32,
+}
+
+/// Milestone-based vesting terms stored separately so existing persisted
+/// `Stream` values remain decodable (#446).
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub struct MilestoneSchedule {
+    /// Net grant amount available over the schedule.
+    pub total_grant: i128,
+    /// Optional cliff timestamp before which nothing vests.
+    pub cliff: Option<u64>,
+    /// Sorted (ascending by timestamp) list of milestones.
+    pub milestones: soroban_sdk::Vec<Milestone>,
+}
+
+/// A single entry in a forward rate schedule (#447).
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub struct RateScheduleEntry {
+    /// Ledger timestamp at which this rate becomes active.
+    pub timestamp: u64,
+    /// Payroll rate in tokens per second from this timestamp onward.
+    pub rate_per_second: i128,
+}
+
+/// Forward rate schedule stored separately so existing persisted `Stream`
+/// values remain decodable (#447). Entries are sorted ascending by timestamp
+/// with no gaps or overlaps.
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub struct RateSchedule {
+    /// Sorted (ascending by timestamp) list of rate changes.
+    pub entries: soroban_sdk::Vec<RateScheduleEntry>,
 }
 
 /// Parameters for a single stream in a batch create call.
@@ -92,6 +218,10 @@ pub struct StreamParams {
     /// starts from `cliff_time` once passed. Must be <= `stop_time` when both
     /// are set.
     pub cliff_time: Option<u64>,
+    /// Optional lifetime-withdrawable cap (SC-97). When set, the stream stops
+    /// accruing/withdrawing once `withdrawn` reaches this value. `None` means
+    /// no cap.
+    pub max_withdrawable: Option<i128>,
 }
 
 /// Single beneficiary in a split stream, with their share in basis points.
@@ -127,6 +257,16 @@ pub struct AutoTopupConfig {
 // was not imported by lib.rs because the types import list did not include it.
 // Alias removed; the struct already exists above.
 
+/// Authorization mode for `settle_stream` callers (#442).
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub enum SettleAuthMode {
+    /// Anyone may call `settle_stream` (default, preserves current behavior).
+    Open,
+    /// Only allowlisted keepers may call `settle_stream`.
+    Allowlist,
+}
+
 /// Pending upgrade proposal for the time-lock upgrade mechanism (SEC-02).
 #[contracttype]
 #[derive(Clone, Debug)]
@@ -142,6 +282,10 @@ pub struct PendingUpgrade {
 pub enum DataKey {
     /// Persisted stream data keyed by stream ID.
     Stream(u64),
+    /// Cold (rarely-read) stream fields keyed by stream ID (ADR-004).
+    /// Holds `StreamColdData`; the hot `Stream` entry carries defaults for these
+    /// fields so legacy persisted streams remain decodable.
+    StreamCold(u64),
     /// Number of streams created so far.
     StreamCount,
     /// Contract administrator address.
@@ -150,7 +294,9 @@ pub enum DataKey {
     AutoTopup(u64),
     /// Minimum deposit enforced on create_stream.
     MinDeposit,
-    /// Optional protocol fee configuration.
+    /// Optional protocol fee configuration: `ProtocolFeeConfig` (fee in bps plus
+    /// treasury address). Absent means protocol fees are disabled, in which case
+    /// `get_protocol_fee_config` returns `None`.
     ProtocolFee,
     /// Monotonically-increasing nonce for admin operations (replay protection).
     AdminNonce,
@@ -208,9 +354,34 @@ pub enum DataKey {
     LastCreateLedger(Address),
     /// Split stream beneficiaries: stream ID → Vec<SplitBeneficiary> for multi-recipient streams (PROD-22).
     SplitBeneficiaries(u64),
-    /// Admin-configurable maximum deposit allowed per stream (SC-66).
-    /// Default: 0, meaning unlimited. Stored in instance storage.
-    MaxDeposit,
+    /// Version stamp for emitted contract events (SC-90). Stored in instance
+    /// storage as a `u32` so indexers can detect the event schema version
+    /// without a resync. Set on initialize/migrate.
+    ContractEventVersion,
+    /// Composite index: (employer address, token address) → Vec<u64> of stream
+    /// IDs funded by that employer with that token (SC-110). Backfilled by
+    /// `migrate` for legacy streams.
+    StreamsByEmployerAndToken(Address, Address),
+    /// Version of the index backfill performed by `migrate` (SC-94). Stored in
+    /// instance storage as a `u32`; gates idempotent index rebuilds.
+    MigrateVersion,
+    /// Cursor for the bounded, resumable index backfill in `migrate` (SC-94).
+    /// Holds the next stream ID to process; removed once backfill completes.
+    MigrateCursor,
+    /// Structured stream metadata (e.g. department, cost center) for payroll
+    /// categorization: stream ID → Map<Symbol, Symbol>. Stored apart from
+    /// `Stream` so existing persisted streams stay decodable. See #467.
+    StreamMetadata(u64),
+    /// Admin-configurable maximum batch size for batch entrypoints.
+    /// Default: `MAX_BATCH_SIZE` (50). Bounded to 1..=200. See #483.
+    MaxBatchSize,
+    /// Immutable/locked flag for a stream (#445): stream ID → bool. Stored
+    /// apart from `Stream` so existing persisted streams stay decodable.
+    StreamImmutable(u64),
+    /// Milestone vesting schedule for a stream (#446).
+    MilestoneSchedule(u64),
+    /// Forward rate schedule for a stream (#447).
+    RateSchedule(u64),
 }
 
 /// Contract error codes – panic messages reference these names so callers can
@@ -242,26 +413,12 @@ pub enum DataKey {
 /// | E022 | ERR_STOP_TIME_PAST      | `stop_time` must be in the future                  |
 /// | E023 | ERR_AMOUNT_NOT_POSITIVE | Amount must be positive                            |
 /// | E024 | ERR_BAD_PENDING_NONCE   | Invalid pending admin nonce                        |
-/// | E025 | ERR_NO_PENDING_UPGRADE  | No pending upgrade proposal exists                 |
+/// | E025 | ERR_NO_PENDING_UPGRADE  | No pending upgrade proposal                        |
 /// | E026 | ERR_DRAIN_NOT_PAUSED    | Contract must be paused before emergency drain     |
-/// | E027 | ERR_NO_PENDING_DRAIN    | No pending emergency drain proposal exists         |
-/// | E028 | ERR_NEW_EMPLOYER_IS_EMPLOYEE | `new_employer` equals the stream employee     |
+/// | E027 | ERR_NO_PENDING_DRAIN    | No pending emergency drain proposal                |
+/// | E028 | ERR_NEW_EMPLOYER_IS_EMPLOYEE | new_employer equals employee                  |
 /// | E029 | ERR_BATCH_TOO_LARGE     | Batch contains more than 50 streams                |
-/// | E030 | ERR_NOT_RECEIPT_OWNER   | Caller does not hold the stream receipt            |
-/// | E031 | ERR_TEMPLATE_NOT_FOUND  | Template not found                                 |
-/// | E032 | ERR_STOP_TIME_TOO_FAR   | `stop_time` exceeds the 10-year limit              |
-/// | E033 | ERR_ABOVE_MAX_DEPOSIT   | Deposit exceeds the configured maximum             |
-/// | E034 | ERR_RATE_LIMIT_EXCEEDED | Per-ledger stream creation rate limit exceeded     |
-/// | E035 | ERR_SPLIT_BASIS_INVALID | Split basis points must sum to 10000               |
-/// | E036 | ERR_SPLIT_TOO_FEW       | Split stream must have at least 2 beneficiaries    |
-/// | E037 | ERR_SPLIT_TOO_MANY      | Split stream cannot have more than 20 beneficiaries|
-/// | E038 | ERR_INVALID_STOP_TIME   | `stop_time` precedes `last_withdraw_time`          |
-/// | E039 | ERR_UPGRADE_TIMELOCK_ACTIVE | Upgrade timelock has not yet expired           |
-/// | E040 | ERR_STREAM_NOT_ENDED    | Stream is not cancelled or exhausted               |
-/// | E041 | ERR_NO_AUTO_TOPUP       | No auto top-up configured for the stream           |
-/// | E042 | ERR_INVALID_AUTO_TOPUP  | Invalid auto top-up parameters                     |
-/// | E043 | ERR_ARCHIVE_TOO_EARLY   | Archive waiting period has not elapsed             |
-/// | E044 | ERR_CLIFF_AFTER_STOP    | `cliff_time` is after `stop_time`                  |
+/// | E036 | ERR_EMPTY_UPDATES       | Batch threshold update list must not be empty      |
 /// Error returned when a payroll rate is zero.
 pub const ERR_ZERO_RATE: &str = "E001: rate_per_second must be greater than zero";
 /// Error returned when a deposit is not positive.
@@ -325,35 +482,87 @@ pub const ERR_BATCH_TOO_LARGE: &str = "E029: batch exceeds the maximum of 50 str
 pub const ERR_NOT_RECEIPT_OWNER: &str = "E030: caller does not hold the stream receipt";
 /// E031: template not found.
 pub const ERR_TEMPLATE_NOT_FOUND: &str = "E031: template not found";
-/// E044: `cliff_time` is after `stop_time` (PROD-17).
-pub const ERR_CLIFF_AFTER_STOP: &str = "E044: cliff_time must be <= stop_time";
+/// E035: `cliff_time` is after `stop_time` (PROD-17).
+pub const ERR_CLIFF_AFTER_STOP: &str = "E035: cliff_time must be <= stop_time";
+/// E036: caller is not an allowlisted settle keeper (#442).
+pub const ERR_NOT_SETTLE_KEEPER: &str = "E036: caller is not an allowlisted settle keeper";
 /// Maximum number of streams in one batch call (create/cancel/pause/resume).
 pub const MAX_BATCH_SIZE: u32 = 50;
 
-/// E033: deposit exceeds the admin-configured per-stream maximum (SC-66).
-pub const ERR_ABOVE_MAX_DEPOSIT: &str = "E033: deposit exceeds the configured maximum";
+/// Current version stamp for emitted contract events (SC-90). Written to
+/// instance storage under `DataKey::ContractEventVersion` on initialize and
+/// migrate so indexers can detect the event schema version.
+pub const CONTRACT_EVENT_VERSION: u32 = 1;
 
-/// E032: stop_time extends beyond 10-year limit from now
-pub const ERR_STOP_TIME_TOO_FAR: &str = "E032: stop_time must not exceed 10 years from now";
+/// Current version of the index backfill performed by `migrate` (SC-94).
+/// Written to instance storage under `DataKey::MigrateVersion`; used to gate
+/// idempotent index rebuilds for legacy streams.
+pub const MIGRATE_VERSION: u32 = 1;
+
+/// Lower bound for the admin-configurable maximum batch size (#483).
+pub const MIN_MAX_BATCH_SIZE: u32 = 1;
+
+/// Upper bound for the admin-configurable maximum batch size (#483).
+pub const MAX_MAX_BATCH_SIZE: u32 = 200;
+
+/// Maximum number of entries allowed in a stream's metadata map (#467).
+pub const MAX_METADATA_ENTRIES: u32 = 8;
+
+/// Maximum length in bytes of a metadata key symbol (#467).
+pub const MAX_METADATA_KEY_LEN: u32 = 32;
+
+/// Maximum length in bytes of a metadata value symbol (#467).
+pub const MAX_METADATA_VALUE_LEN: u32 = 32;
+
+/// E036: stream metadata map exceeds `MAX_METADATA_ENTRIES` (#467).
+pub const ERR_METADATA_TOO_LARGE: &str = "E036: metadata exceeds the maximum number of entries";
+
+/// E037: a metadata key or value exceeds its maximum length (#467).
+pub const ERR_METADATA_ENTRY_TOO_LONG: &str = "E037: metadata key or value exceeds maximum length";
+
+/// E038: configured max batch size is outside the allowed bounds (#483).
+pub const ERR_INVALID_MAX_BATCH_SIZE: &str = "E038: max batch size out of bounds";
+
+/// E039: operation rejected because the stream is immutable (#445).
+pub const ERR_IMMUTABLE_STREAM: &str = "E039: stream is immutable";
+
+/// E040: milestone schedule is invalid (empty, unsorted, or fractions do not
+/// sum to 10000) (#446).
+pub const ERR_MILESTONE_SCHEDULE_INVALID: &str = "E040: invalid milestone schedule";
+
+/// E041: rate schedule is invalid (empty or contains non-positive rates) (#447).
+pub const ERR_RATE_SCHEDULE_INVALID: &str = "E041: invalid rate schedule";
+
+/// E042: rate schedule contains a gap between entries (#447).
+pub const ERR_RATE_SCHEDULE_GAP: &str = "E042: rate schedule contains a gap";
+
+/// E043: rate schedule contains overlapping or unsorted entries (#447).
+pub const ERR_RATE_SCHEDULE_OVERLAP: &str = "E043: rate schedule contains an overlap";
+
+/// E044: withdraw_to recipient is invalid (e.g. the contract itself) (#448).
+pub const ERR_WITHDRAW_TO_INVALID: &str = "E044: invalid withdraw_to recipient";
+
+/// E030: stop_time extends beyond 10-year limit from now
+pub const ERR_STOP_TIME_TOO_FAR: &str = "E030: stop_time must not exceed 10 years from now";
 
 /// Maximum stop_time window: 10 years in seconds (315,360,000 seconds)
 pub const MAX_STOP_TIME_OFFSET: u64 = 315_360_000;
 
 // Restored from a97bb5d (dropped by a merge).
-/// E034: per-employer, per-ledger stream creation rate limit exceeded.
-pub const ERR_RATE_LIMIT_EXCEEDED: &str = "E034: stream creation rate limit exceeded for this ledger";
+/// E037: per-employer, per-ledger stream creation rate limit exceeded.
+pub const ERR_RATE_LIMIT_EXCEEDED: &str = "E037: stream creation rate limit exceeded for this ledger";
 
 // Restored from a97bb5d (dropped by a merge).
 /// Default maximum number of streams an employer may create in a single ledger.
 pub const DEFAULT_MAX_CREATES_PER_LEDGER: u32 = 50;
 
 // Restored from cf48a49 (dropped by a merge).
-/// E035: split beneficiary basis points must sum to 10000 (100%)
-pub const ERR_SPLIT_BASIS_INVALID: &str = "E035: split beneficiary basis points must sum to 10000";
+/// E038: split beneficiary basis points must sum to 10000 (100%)
+pub const ERR_SPLIT_BASIS_INVALID: &str = "E038: split beneficiary basis points must sum to 10000";
 
 // Restored from cf48a49 (dropped by a merge).
-/// E036: split stream must have at least 2 beneficiaries
-pub const ERR_SPLIT_TOO_FEW: &str = "E036: split stream must have at least 2 beneficiaries";
+/// E033: split stream must have at least 2 beneficiaries
+pub const ERR_SPLIT_TOO_FEW: &str = "E033: split stream must have at least 2 beneficiaries";
 
 // Restored from cf48a49 (dropped by a merge).
 /// E037: split stream cannot have more than 20 beneficiaries
@@ -364,8 +573,8 @@ pub const ERR_SPLIT_TOO_MANY: &str = "E037: split stream cannot have more than 2
 pub const MAX_SPLIT_BENEFICIARIES: u32 = 20;
 
 // Restored from c3cb54c (dropped by a merge).
-/// E038: `update_stop_time` would move the stop time before the last withdrawal.
-pub const ERR_INVALID_STOP_TIME: &str = "E038: stop_time precedes last_withdraw_time";
+/// E039: `update_stop_time` would move the stop time before the last withdrawal.
+pub const ERR_INVALID_STOP_TIME: &str = "E039: stop_time precedes last_withdraw_time";
 
 // Restored from a74e8f6 (dropped by a merge).
 /// E039: `execute_upgrade` was called before the timelock expired.
@@ -387,6 +596,9 @@ pub const ERR_INVALID_AUTO_TOPUP: &str = "E042: invalid auto top-up parameters";
 /// E043: `archive_stream` was called before `ARCHIVE_WAIT_PERIOD` elapsed.
 pub const ERR_ARCHIVE_TOO_EARLY: &str = "E043: archive waiting period has not elapsed";
 
+/// `withdraw_amount` was called with an amount greater than claimable (SC-81).
+pub const ERR_EXCEEDS_CLAIMABLE: &str = "E036: amount exceeds claimable balance";
+
 // Restored from 24db2de (dropped by a merge).
 /// Protocol fee configuration. Absent configuration means fees are disabled.
 #[contracttype]
@@ -397,3 +609,9 @@ pub struct ProtocolFeeConfig {
     /// Address that receives protocol fees.
     pub treasury: Address,
 }
+
+/// Structured, bounded metadata attached to a stream for payroll categorization
+/// (e.g. department, cost center). Keys and values are short symbols; the map
+/// is capped at `MAX_METADATA_ENTRIES` entries with each key/value limited to
+/// `MAX_METADATA_KEY_LEN` / `MAX_METADATA_VALUE_LEN` bytes. See #467.
+pub type StreamMetadata = Map<Symbol, Symbol>;

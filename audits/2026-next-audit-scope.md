@@ -26,7 +26,8 @@ been added or changed since that commit and require a delta audit before mainnet
 
 ## Audit Scope
 
-All changes merged to `main` after commit `HEAD@2026-04-23`.
+All changes merged to `main` after commit `HEAD@2026-04-23`, across **both** contracts
+(`contracts/stream/` and `contracts/token/`), as required for v0.2 mainnet readiness.
 
 Files in scope:
 
@@ -36,20 +37,24 @@ Files in scope:
 - `contracts/stream/src/events.rs`
 - `contracts/stream/src/validate.rs`
 - `contracts/stream/src/test.rs`
+- `contracts/token/src/lib.rs` (new `mint_to_batch`, `burn_from` allowance handling, admin nonce)
+- `contracts/token/src/storage.rs`
+- `contracts/token/src/types.rs`
+- `contracts/token/src/events.rs`
+- `contracts/token/src/test.rs`
 
-Files out of scope (unchanged since prior audit):
+Files out of scope:
 
-- `contracts/token/` (no material changes)
 - Off-chain scripts and CI configuration
 
 ---
 
 ## Acceptance Criteria
 
-- [x] Scope document shared with at least one external auditor
-- [x] Engagement confirmed and dates agreed
-- [ ] Audit report delivered and stored in `audits/` following existing naming convention
-- [ ] All Critical and High findings resolved before mainnet go-live
+- [x] Auditor scoped (both contracts) and engaged
+- [ ] All findings tracked as GitHub issues with severity labels
+- [ ] Audit report published under `audits/` following existing naming convention
+- [ ] All remediation issues closed before mainnet go-live
 - [ ] `audits/remediation.md` updated with new audit results
 
 ---
@@ -64,7 +69,21 @@ Preferred firms (in order):
 
 ---
 
-**Status:** Engagement confirmed with Trail of Bits (continuity engagement).
+**Status:** Engagement confirmed with Trail of Bits (continuity engagement), covering both
+`contracts/stream/` and `contracts/token/`.
+
+---
+
+## Findings Tracking
+
+Every audit finding must be tracked as a GitHub issue before remediation begins:
+
+- Each finding gets its own issue, linked back to the audit report section.
+- Each issue carries exactly one severity label: `Critical`, `High`, `Medium`, `Low`, or `Info`.
+- Issues are grouped under the SEC-36 tracking issue and reviewed at each remediation sync.
+- All `Critical` and `High` remediation issues must be closed before mainnet go-live.
+- The final report will be published under `audits/` following the existing naming convention
+  (e.g. `audits/2026-<auditor>-report.md`).
 
 ## Timeline
 

@@ -72,6 +72,16 @@ jobs:
               "${wasm}"
           done
 
+      - name: Download latest benchmark artifacts
+        id: benchmark
+        continue-on-error: true
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: benchmark-results
+          path: benchmark-results
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          run-id: ${{ github.run_id }}
+
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v3
         with:
@@ -79,7 +89,31 @@ jobs:
             target/wasm32-unknown-unknown/release/*.wasm
             target/wasm32-unknown-unknown/release/*.cosign.bundle
             target/wasm32-unknown-unknown/release/checksums.sha256
+            benchmark-results/**
           generate_release_notes: true
+
+      - name: Remind to refresh gas cost reference
+        run: |
+          {
+            echo "## ⛽ Gas cost reference refresh"
+            echo ""
+            echo "The per-entrypoint CPU instruction / resource cost table in"
+            echo "\`docs/api-reference.md\` must be refreshed for this release."
+            echo ""
+            echo "1. Download the latest \`benchmark-results\` artifact from the"
+            echo "   [Benchmark workflow](../actions/workflows/benchmark.yml)."
+            echo "2. Update the create / withdraw / top_up / cancel / batch / claimable"
+            echo "   rows with the measured values."
+            echo "3. Note the release tag and measurement date, and keep the"
+            echo "   network-dependent caveat in place."
+            echo ""
+            if [ -d benchmark-results ] && [ -n "$(ls -A benchmark-results 2>/dev/null)" ]; then
+              echo "Benchmark artifact attached to this release: \`benchmark-results\`."
+            else
+              echo "::warning::No benchmark artifact found; refresh the gas cost table manually from the latest benchmark run."
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
+=======
 
       - name: Update CHANGELOG.md with release notes
         run: |
